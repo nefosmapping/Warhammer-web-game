@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Аудит моделей — Комиссар Вондер</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      padding: 32px;
+      background: #0b0b10;
+      color: #e9e3d2;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    h1 { font-size: 1.1rem; letter-spacing: 0.12em; margin: 0 0 6px; }
+    p.note { color: #9c9a8e; font-size: 0.8rem; margin: 0 0 22px; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+    th, td { border-bottom: 1px solid #2a2a33; padding: 7px 10px; text-align: left; }
+    th { color: #d8b56a; font-weight: 600; letter-spacing: 0.06em; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.fail td { color: #e06050; }
+    tr.ok td.status { color: #7fd06a; }
+    tfoot td { border-top: 2px solid #3a3a45; font-weight: 700; padding-top: 12px; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>АУДИТ ПРОЦЕДУРНЫХ МОДЕЛЕЙ</h1>
+  <p class="note">Числа считаются через geometry.index / attributes.position в момент сборки модели.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Модель</th>
+        <th>Категория</th>
+        <th class="num">Меши</th>
+        <th class="num">Треугольники</th>
+        <th class="num">Минимум</th>
+        <th>Статус</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+    <tfoot id="total"></tfoot>
+  </table>
+
+  <script type="module">
+    import { auditModels } from './js/models/index.js';
+
+    try {
+      const result = auditModels();
+      const tbody = document.getElementById('rows');
+
+      for (const row of result.rows) {
+        const tr = document.createElement('tr');
+        tr.className = row.passed ? 'ok' : 'fail';
+        tr.innerHTML = `
+          <td>${row.name}</td>
+          <td>${row.category}</td>
+          <td class="num">${row.meshes}</td>
+          <td class="num">${row.triangles}</td>
+          <td class="num">${row.minTriangles}</td>
+          <td class="status">${row.passed ? 'OK' : 'НИЖЕ МИНИМУМА'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      document.getElementById('total').innerHTML = `
+        <tr>
+          <td colspan="2">ИТОГО (${result.rows.length} моделей)</td>
+          <td class="num">${result.totalMeshes}</td>
+          <td class="num">${result.totalTriangles}</td>
+          <td colspan="2"></td>
+        </tr>
+      `;
+
+      console.info('MODEL_AUDIT', JSON.stringify(result.rows));
+    } catch (error) {
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        `<pre style="color:#e06050;white-space:pre-wrap">${error && error.stack ? error.stack : error}</pre>`
+      );
+      console.error(error);
+    }
+  </script>
+</body>
+</html>

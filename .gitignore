@@ -1,0 +1,30 @@
+# ---- Отладка и логи ----
+# Логи headless-браузера от прошлых попыток проверки рендера
+chrome-p5*.log
+*.log
+
+# ---- Системные файлы ----
+Thumbs.db
+desktop.ini
+.DS_Store
+._*
+
+# ---- Редакторы ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+
+# ---- Node / сборка ----
+# В проекте нет сборщика и npm-зависимостей, но на случай локального инструментария
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---- Временные артефакты ----
+*.tmp
+*.bak
+*.orig
+screenshots/
+audit-screens/

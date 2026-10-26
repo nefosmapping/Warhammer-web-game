@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Комиссар Вондер: Крушение над Армагеддоном</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Атмосферные CSS-оверлеи -->
+    <div id="vignette"></div>
+    <div id="damage-flash"></div>
+
+    <!-- ================= HUD ================= -->
+    <div id="hud" class="hidden">
+      <div id="crosshair">
+        <span class="crosshair-dot"></span>
+      </div>
+      <div id="hitmarker" class="hitmarker" aria-hidden="true"></div>
+
+      <div class="hud-corner hud-left">
+        <div class="stat-row">
+          <span class="stat-icon stat-hp">✚</span>
+          <div class="stat-bar"><div id="hp-fill" class="stat-fill hp-fill"></div></div>
+          <span id="hp-value" class="stat-value">100</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-icon stat-armor">✥</span>
+          <div class="stat-bar"><div id="armor-fill" class="stat-fill armor-fill"></div></div>
+          <span id="armor-value" class="stat-value">50</span>
+        </div>
+      </div>
+
+      <div class="hud-corner hud-right">
+        <div class="ammo-block">
+          <span id="ammo-value" class="ammo-value">30 / 90</span>
+          <span id="weapon-label" class="ammo-label">Болтер</span>
+        </div>
+        <div class="grenade-block">
+          <span class="grenade-icon">◉</span>
+          <span id="grenade-value" class="grenade-value">2</span>
+        </div>
+      </div>
+
+      <div id="objective" class="objective hidden">Добраться до штаба</div>
+
+      <div id="tutorial-active" class="tutorial-bar hidden">
+        <div id="tutorial-text" class="tutorial-text">Туториал</div>
+        <div class="tutorial-progress"><div id="tutorial-fill" class="tutorial-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- ================= КАТ-СЦЕНЫ ================= -->
+    <div id="letterbox" class="letterbox hidden">
+      <div class="letterbox-bar letterbox-top"></div>
+      <div class="letterbox-bar letterbox-bottom"></div>
+      <div class="letterbox-skip">ПРОБЕЛ — ПРОПУСТИТЬ</div>
+    </div>
+
+    <div id="dialogue" class="dialogue hidden">
+      <div class="dialogue-panel">
+        <div class="dialogue-aquila">✠</div>
+        <div id="dialogue-speaker" class="dialogue-speaker">[Гарик Вондер]</div>
+        <div id="dialogue-text" class="dialogue-text"></div>
+        <div class="dialogue-hint">ПРОБЕЛ — ДАЛЬШЕ</div>
+      </div>
+    </div>
+
+    <!-- ================= СЛУЖЕБНЫЕ ОВЕРЛЕИ ================= -->
+    <div id="toast" class="toast"></div>
+
+    <div id="level-card" class="level-card hidden">
+      <div class="level-card-inner">
+        <p class="level-card-overline">УРОВЕНЬ</p>
+        <h2 id="level-card-title" class="level-card-title">ДЖУНГЛИ СМЕРТИ</h2>
+        <p id="level-card-subtitle" class="level-card-subtitle">Армагеддон-Прайм · квадрат 7-Г</p>
+      </div>
+    </div>
+
+    <!-- ================= ЗАСТАВКА ================= -->
+    <section id="splash" class="overlay splash">
+      <div class="splash-bg"></div>
+      <div class="splash-content">
+        <div class="splash-line"></div>
+        <h1 class="splash-title">KrimProduction</h1>
+        <p class="splash-subtitle">представляет</p>
+        <div class="splash-line"></div>
+      </div>
+      <p class="splash-skip">нажмите любую клавишу, чтобы пропустить</p>
+    </section>
+
+    <!-- ================= ГЛАВНОЕ МЕНЮ ================= -->
+    <section id="menu" class="overlay menu hidden">
+      <div class="menu-bg"></div>
+      <div class="menu-content">
+        <p class="menu-overline">Имперская Гвардия · Армагеддон-Прайм</p>
+        <h1 class="menu-title">КОМИССАР ВОНДЕР</h1>
+        <p class="menu-subtitle">Крушение над Армагеддоном</p>
+
+        <div class="menu-buttons">
+          <button class="ui-btn primary" data-action="start">Начать службу</button>
+          <button class="ui-btn" data-action="settings">Настройки</button>
+          <button class="ui-btn" data-action="exit">Выход</button>
+        </div>
+
+        <div id="settings-panel" class="settings-panel hidden">
+          <h2 class="settings-title">Настройки</h2>
+          <label class="setting-row">
+            <span class="setting-label">Чувствительность мыши</span>
+            <input id="sensitivity" class="setting-range" type="range" min="0.5" max="2" step="0.05" value="1">
+            <output id="sensitivity-value" class="setting-output">1.00</output>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">Громкость</span>
+            <input id="volume" class="setting-range" type="range" min="0" max="100" step="1" value="70">
+            <output id="volume-value" class="setting-output">70%</output>
+          </label>
+          <button class="ui-btn small" data-action="settings-close">Закрыть</button>
+        </div>
+
+        <p class="menu-footer">HTML5 · Three.js · процедурная графика · 60 FPS target</p>
+      </div>
+    </section>
+
+    <!-- ================= ПАУЗА ================= -->
+    <section id="pause" class="overlay modal hidden">
+      <div class="modal-panel">
+        <h2 class="modal-title">ПАУЗА</h2>
+        <p class="modal-note">Служба Императору не терпит промедления.</p>
+        <div class="menu-buttons">
+          <button class="ui-btn primary" data-action="resume">Продолжить</button>
+          <button class="ui-btn" data-action="menu">В главное меню</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= СМЕРТЬ ================= -->
+    <section id="death" class="overlay modal death-screen hidden">
+      <div class="modal-panel">
+        <h2 class="modal-title danger">ВЫ ПОГИБЛИ</h2>
+        <p class="modal-note">Император не прощает слабости.</p>
+        <div class="menu-buttons">
+          <button class="ui-btn primary" data-action="checkpoint">Повторить с чекпоинта</button>
+          <button class="ui-btn" data-action="menu">В главное меню</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= ФИНАЛ ================= -->
+    <section id="ending" class="overlay modal ending-screen hidden">
+      <div class="modal-panel">
+        <p class="ending-overline">КОНЕЦ ПРОЛОГА</p>
+        <h2 class="modal-title">ИМПЕРАТОР ЗАЩИЩАЕТ</h2>
+        <p class="modal-note">Служение Императору продолжается.</p>
+        <div class="menu-buttons">
+          <button class="ui-btn primary" data-action="restart">Начать заново</button>
+          <button class="ui-btn" data-action="menu">Вернуться в меню</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="fade-black" class="fade-black"></div>
+    <div id="debug" class="debug hidden">FPS —</div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
