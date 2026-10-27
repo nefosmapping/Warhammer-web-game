@@ -75,9 +75,11 @@ function buildOrkFighter() {
 }
 
 export class AerialWar {
-  constructor({ scene, weapons = null }) {
+  constructor({ scene, weapons = null, onModelAdded = null }) {
     this.scene = scene;
     this.weapons = weapons;
+    // Колбэк для админ-режима: wireframe/CSM должны применяться к новым моделям.
+    this.onModelAdded = onModelAdded;
     this.time = 0;
     this.spawnTimer = 4 + Math.random() * 5;
     this.maxAircraft = 8;
@@ -106,7 +108,7 @@ export class AerialWar {
   }
 
   spawnFlyby() {
-    if (this.aircraft.length >= this.maxAircraft) return;
+    if (this.aircraft.length >= this.maxAircraft) return false;
 
     const model = makeValkyrie({ scale: 0.55 });
     this._prepareAirModel(model);
@@ -128,6 +130,7 @@ export class AerialWar {
     model.rotation.y = Math.atan2(-direction.x, -direction.z);
     model.rotation.z = (this.rng() - 0.5) * 0.18;
     this.scene.add(model);
+    this.onModelAdded?.(model);
 
     this.aircraft.push({
       kind: 'flyby',
@@ -141,17 +144,23 @@ export class AerialWar {
 
     // Дымный след двигателей: пара точек позади.
     this._spawnTrail(model, 0x6a6a66, 3);
+    return true;
   }
 
-  spawnDogfight() {
-    if (this.aircraft.length + 2 > this.maxAircraft) return;
+  // options.center — точка центра воздушного боя (админ-спавн над игроком).
+  spawnDogfight(options = {}) {
+    if (this.aircraft.length + 2 > this.maxAircraft) return false;
 
-    const center = new THREE.Vector3(
-      (this.rng() - 0.5) * 70,
-      44 + this.rng() * 14,
-      (this.rng() - 0.5) * 70
-    );
-    const radius = 18 + this.rng() * 12;
+    const center = options.center instanceof THREE.Vector3
+      ? options.center.clone()
+      : new THREE.Vector3(
+        (this.rng() - 0.5) * 70,
+        44 + this.rng() * 14,
+        (this.rng() - 0.5) * 70
+      );
+    const radius = Number.isFinite(options.radius)
+      ? options.radius
+      : 18 + this.rng() * 12;
     const angle = this.rng() * Math.PI * 2;
     const angularSpeed = 0.46 + this.rng() * 0.22;
     const direction = this.rng() < 0.5 ? 1 : -1;
@@ -160,10 +169,12 @@ export class AerialWar {
     this._prepareAirModel(valkyrie);
     valkyrie.position.copy(center);
     this.scene.add(valkyrie);
+    this.onModelAdded?.(valkyrie);
 
     const fighterData = buildOrkFighter();
     fighterData.group.position.copy(center);
     this.scene.add(fighterData.group);
+    this.onModelAdded?.(fighterData.group);
 
     const pair = {
       kind: 'dogfight',
@@ -207,6 +218,8 @@ export class AerialWar {
       { kind: 'dogfight-member', pair, role: 'valkyrie', model: valkyrie },
       { kind: 'dogfight-member', pair, role: 'fighter', model: fighterData.group }
     );
+
+    return true;
   }
 
   _damageFighter(pair, amount) {

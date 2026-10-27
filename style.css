@@ -643,6 +643,23 @@ body {
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
 }
 
+.vehicle-prompt {
+  position: absolute;
+  bottom: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  padding: 0.45rem 1rem;
+  font-family: ui-monospace, 'Consolas', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: #b8ffc8;
+  background: rgba(4, 12, 7, 0.78);
+  border: 1px solid rgba(110, 255, 150, 0.4);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
 .tutorial-bar {
   position: absolute;
   top: 70px;
@@ -982,13 +999,17 @@ body {
   top: 40px;
   right: 16px;
   z-index: 85;
-  min-width: 190px;
+  min-width: 218px;
+  max-height: calc(100vh - 56px);
   padding: 0.75rem;
+  overflow-y: auto;
   font-family: ui-monospace, 'Consolas', monospace;
   background: rgba(0, 8, 4, 0.88);
   border: 1px solid rgba(110, 255, 150, 0.45);
   box-shadow: 0 0 24px rgba(0, 0, 0, 0.8), inset 0 0 22px rgba(20, 90, 45, 0.18);
   pointer-events: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(110, 255, 150, 0.45) transparent;
 }
 
 .debug-panel-header {
@@ -1037,6 +1058,90 @@ body {
   border-color: rgba(160, 255, 190, 0.8);
 }
 
+.debug-level-btn.debug-wide {
+  grid-column: span 2;
+}
+
+.debug-level-btn.is-on {
+  color: #041007;
+  background: #9effa0;
+  border-color: #d6ffd9;
+  box-shadow: 0 0 10px rgba(120, 255, 150, 0.35);
+}
+
+.debug-level-btn.is-on:hover {
+  background: #c4ffc8;
+  border-color: #ffffff;
+}
+
+.debug-level-btn:disabled,
+.debug-level-btn.is-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.debug-panel-section {
+  margin-top: 0.6rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(110, 255, 150, 0.16);
+}
+
+.debug-panel-section-title {
+  margin-bottom: 0.35rem;
+  font-size: 0.54rem;
+  letter-spacing: 0.18em;
+  color: rgba(158, 255, 160, 0.68);
+}
+
+.debug-toggle {
+  color: #9aa89a;
+  background: rgba(10, 26, 16, 0.85);
+  border-color: rgba(110, 255, 150, 0.22);
+}
+
+.debug-toggle:hover {
+  background: rgba(20, 58, 32, 0.92);
+}
+
+.debug-toggle.is-on {
+  color: #041007;
+  background: #9effa0;
+  border-color: #d6ffd9;
+}
+
+.debug-toggle.is-on:hover {
+  background: #c4ffc8;
+}
+
+.debug-range-row {
+  display: grid;
+  grid-template-columns: 1fr 74px 42px;
+  gap: 5px;
+  align-items: center;
+  margin-top: 0.5rem;
+  font-size: 0.55rem;
+  letter-spacing: 0.05em;
+  color: rgba(158, 255, 160, 0.7);
+}
+
+.debug-range {
+  width: 100%;
+  height: 12px;
+  accent-color: #9effa0;
+  cursor: pointer;
+}
+
+.debug-range:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.debug-range-value {
+  text-align: right;
+  color: #b8ffc8;
+}
+
 .debug-level-btn.debug-finale {
   grid-column: span 2;
   color: #ffe0a0;
@@ -1069,6 +1174,28 @@ body {
 .debug-level-btn.debug-spawn:hover {
   background: rgba(26, 96, 52, 0.92);
   border-color: rgba(160, 255, 190, 0.9);
+}
+
+.debug-level-btn.debug-tank {
+  color: #d8e8b8;
+  border-color: rgba(160, 200, 90, 0.45);
+  background: rgba(24, 38, 14, 0.88);
+}
+
+.debug-level-btn.debug-tank:hover {
+  background: rgba(52, 74, 24, 0.94);
+  border-color: rgba(190, 230, 120, 0.9);
+}
+
+.debug-level-btn.debug-vehicle {
+  color: #b8dcff;
+  border-color: rgba(90, 170, 255, 0.5);
+  background: rgba(10, 28, 48, 0.88);
+}
+
+.debug-level-btn.debug-vehicle:hover {
+  background: rgba(20, 60, 100, 0.94);
+  border-color: rgba(140, 205, 255, 0.95);
 }
 
 .debug-panel-hint {

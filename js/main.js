@@ -32,6 +32,7 @@ import { buildLevel, hasLevel } from './levels/index.js';
 import { AllyManager } from './allies.js';
 import { ParticleSystem } from './particles.js';
 import { AerialWar } from './aerial.js';
+import { VehicleManager } from './vehicles.js';
 
 class Game {
   constructor() {
@@ -44,6 +45,15 @@ class Game {
     this.debugEnabled = query.has('debug');
     // Скрытый дебаг-режим, включается паролем в главном меню (Shift + `).
     this.debugMode = false;
+    this.adminPanelVisible = false;
+
+    // Состояние админ-настроек графики.
+    this.wireframeEnabled = false;
+    this.shadowsEnabled = true;
+    this.fogEnabled = true;
+    this._wireframeMaterials = new Map();
+    this._savedFog = null;
+
     this.skipSplash = query.has('skipSplash');
     this.autoPlay = query.has('play');
     this.noPost = query.has('nopost');
@@ -106,7 +116,10 @@ class Game {
       colliders: this.colliders,
       audio: this.audio,
       weapons: this.weapons,
-      onModelAdded: (model) => this.lighting?.refreshMaterials(model)
+      onModelAdded: (model) => {
+        this.lighting?.refreshMaterials(model);
+        this._applyWireframeTo(model);
+      }
     });
 
     // Выстрелы и взрывы привлекают орков.
@@ -122,7 +135,14 @@ class Game {
 
     // Фоновые воздушные бои высоко над полем боя (Валькирии/орочьи истребители).
     // weapons передаём, чтобы истребители можно было сбить болтером/ПЗРК.
-    this.aerial = new AerialWar({ scene: this.world.scene, weapons: this.weapons });
+    this.aerial = new AerialWar({
+      scene: this.world.scene,
+      weapons: this.weapons,
+      onModelAdded: (model) => {
+        this.lighting?.refreshMaterials(model);
+        this._applyWireframeTo(model);
+      }
+    });
 
     // Кровь при попадании и дым из ствола.
     this.weapons.onHit = (root, damage, source, point) => {
@@ -162,6 +182,24 @@ class Game {
     window.addEventListener('resize', () => {
       this.lighting?.handleResize();
       this.postProcessing?.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Управляемая техника из админ-панели (танки и «Валькирия»).
+    this.vehicles = new VehicleManager({
+      scene: this.world.scene,
+      camera: this.world.camera,
+      input: this.input,
+      player: this.player,
+      weapons: this.weapons,
+      audio: this.audio,
+      hud: this.hud,
+      colliders: this.colliders,
+      particles: this.particles,
+      getSensitivity: () => this.settings.sensitivity,
+      onModelAdded: (model) => {
+        this.lighting?.refreshMaterials(model);
+        this._applyWireframeTo(model);
+      }
     });
 
     // Диалоги и кат-сцены (Фаза 6).
@@ -217,6 +255,7 @@ class Game {
     this._bindUi();
     this._bindInput();
     this._syncSettingsUi();
+    this._syncAdminToggles();
 
     if (this.debugEnabled) this.dom.debug.classList.remove('hidden');
 
@@ -325,7 +364,9 @@ class Game {
 
       debug: document.getElementById('debug'),
       debugPanel: document.getElementById('debug-panel'),
-      debugCoords: document.getElementById('debug-coords')
+      debugCoords: document.getElementById('debug-coords'),
+      debugPixelRatio: document.getElementById('debug-pixel-ratio'),
+      debugPixelRatioValue: document.getElementById('debug-pixel-ratio-value')
     };
   }
 
@@ -398,8 +439,11 @@ class Game {
           this.hud.setVisible(true);
           this.world.setMenuMode(false);
 
-          this.player.setActive(true);
-          this.weapons.setActive(true);
+          // Если админ остался в технике и вернулся с паузы,
+          // управление игроком/оружием остаётся отключённым.
+          const piloting = Boolean(this.vehicles?.active);
+          this.player.setActive(!piloting);
+          this.weapons.setActive(!piloting);
           this.enemies.setActive(true);
 
           if (fresh || !this.level || payload.level) {
@@ -423,8 +467,13 @@ class Game {
           this.input.exitPointerLock();
         },
         update: (dt) => {
-          this.player.update(dt);
-          this.weapons.update(dt);
+          this.vehicles?.update(dt);
+
+          if (!this.vehicles?.active) {
+            this.player.update(dt);
+            this.weapons.update(dt);
+          }
+
           this.enemies.update(dt);
           this.allies.update(dt);
           this._updateLevel(dt);
@@ -436,6 +485,7 @@ class Game {
           this.player.setActive(false);
           this.weapons.setActive(false);
           this.enemies.setActive(false);
+          this.hud.setVehiclePrompt?.('');
           this.dom.pause.classList.remove('hidden');
           this.input.exitPointerLock();
         },
@@ -524,11 +574,16 @@ class Game {
           this.weapons.setActive(false);
         },
         update: (dt) => {
-          this.player.update(dt);
-          this.weapons.update(dt);
+          this.vehicles?.update(dt);
+
+          if (!this.vehicles?.active) {
+            this.player.update(dt);
+            this.weapons.update(dt);
+            this.tutorialManager.update(dt);
+          }
+
           this.enemies.update(dt);
           this.allies.update(dt);
-          this.tutorialManager.update(dt);
         }
       },
 
@@ -674,6 +729,7 @@ class Game {
 
     try {
       this.lighting.refreshMaterials(this.world.scene);
+      this._applyWireframeTo(this.world.scene);
     } catch (error) {
       console.error('[Tutorial] Ошибка обновления материалов:', error);
     }
@@ -921,6 +977,7 @@ class Game {
     this.allies.setActive(true);
 
     this.lighting.refreshMaterials(this.world.scene);
+    this._applyWireframeTo(this.world.scene);
 
     // Чекпоинт = начало текущего уровня.
     this._saveCheckpoint(levelId);
@@ -975,6 +1032,7 @@ class Game {
 
   _unloadLevel() {
     this._disposePracticeArena();
+    this.vehicles?.clear();
 
     // Страховка от «двойного пола»: если группа арены потеряла ссылку,
     // находим её в сцене по имени и удаляем.
@@ -1127,6 +1185,10 @@ class Game {
       }
       console.info(`[Level] Волна врагов: ${wave.enemies.length}`);
     }
+
+    // В технике и рядом с ней E отдан управлению транспортом,
+    // поэтому подборы и выход с уровня не перехватывают клавишу.
+    if (this.vehicles?.active || this.vehicles?.nearby) return;
 
     // 3. Подбор предметов.
     let nearest = null;
@@ -1354,11 +1416,27 @@ class Game {
       });
     });
 
-    // Админ-действия (выдача ПЗРК и т.п.).
+    // Админ-действия (выдача ПЗРК, спавн, здоровье, режим Бога и т.п.).
     document.querySelectorAll('[data-debug-action]').forEach((button) => {
       button.addEventListener('click', () => {
         this._handleDebugAction(button.dataset.debugAction);
       });
+    });
+
+    // Переключатели графики в админ-панели.
+    document.querySelectorAll('[data-debug-toggle]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this._toggleGraphicsSetting(button.dataset.debugToggle);
+      });
+    });
+
+    // Разрешение рендера (pixel ratio) из админ-панели.
+    this.dom.debugPixelRatio?.addEventListener('input', () => {
+      const value = parseFloat(this.dom.debugPixelRatio.value);
+      if (!Number.isFinite(value)) return;
+      this.world.setPixelRatioCap(value);
+      this.postProcessing?.setSize(window.innerWidth, window.innerHeight);
+      this._syncAdminToggles();
     });
 
     // Ползунки настроек: перетаскивание — тоже жест пользователя.
@@ -1450,9 +1528,11 @@ class Game {
 
   _enableDebugMode() {
     if (this.debugMode) {
+      this.adminPanelVisible = true;
       this.dom.debugPanel?.classList.remove('hidden');
       this.dom.debugCoords?.classList.remove('hidden');
       this.dom.debug?.classList.remove('hidden');
+      this._syncAdminToggles();
       return;
     }
 
@@ -1465,10 +1545,12 @@ class Game {
     }
 
     this.debugMode = true;
+    this.adminPanelVisible = true;
     this.dom.debugPanel?.classList.remove('hidden');
     this.dom.debugCoords?.classList.remove('hidden');
     this.dom.debug?.classList.remove('hidden');
-    this._toast('DEBUG MODE активирован. Y — свободный полёт.', 3500);
+    this._syncAdminToggles();
+    this._toast('DEBUG MODE активирован. F1 — панель, H — здоровье, кнопка — режим Бога.', 4500);
     console.info('[Debug] Режим разработчика включён.');
   }
 
@@ -1513,6 +1595,36 @@ class Game {
 
     if (action === 'spawn-guard') {
       this._spawnAdminGuard();
+      return;
+    }
+
+    if (action === 'heal') {
+      this._adminRestoreHealth();
+      return;
+    }
+
+    if (action === 'god') {
+      this._toggleGodMode();
+      return;
+    }
+
+    if (action === 'dogfight') {
+      this._spawnAdminDogfight();
+      return;
+    }
+
+    if (action === 'spawn-tank-deepseek') {
+      this._spawnAdminTank('deepseek');
+      return;
+    }
+
+    if (action === 'spawn-tank-chatgpt') {
+      this._spawnAdminTank('chatgpt');
+      return;
+    }
+
+    if (action === 'spawn-valkyrie') {
+      this._spawnAdminValkyrie();
     }
   }
 
@@ -1573,6 +1685,7 @@ class Game {
     if (ally) {
       this.allies.setActive(true);
       this.lighting.refreshMaterials(ally.model);
+      this._applyWireframeTo(ally.model);
       this._toast('Гвардеец прибыл. Колёсико — указать точку.', 2200);
     }
   }
@@ -1626,6 +1739,331 @@ class Game {
     this._toast(enabled ? 'Noclip: свободный полёт включён.' : 'Noclip выключен.', 1600);
   }
 
+  // -------------------------------------------------------------------------
+  // Админ-панель: игрок, догфайт и настройки графики
+  // -------------------------------------------------------------------------
+
+  _isAdminGameplayState() {
+    return (
+      this.stateName === 'playing' ||
+      this.stateName === 'tutorial' ||
+      this.stateName === 'paused'
+    );
+  }
+
+  _adminRestoreHealth() {
+    if (!this._isAdminGameplayState()) {
+      this._toast('Восстановление здоровья доступно только в игре.', 2000);
+      return;
+    }
+
+    if (this.player.dead) {
+      this._toast('Игрок мёртв — используйте чекпоинт.', 2200);
+      return;
+    }
+
+    this.player.health = CONFIG.player.maxHealth;
+    this.player.armor = CONFIG.player.maxArmor;
+    this.player._updateHud();
+    this._toast(
+      `Здоровье восстановлено: HP ${Math.round(this.player.health)}, AP ${Math.round(this.player.armor)}.`,
+      2000
+    );
+  }
+
+  _toggleGodMode() {
+    if (!this._isAdminGameplayState()) {
+      this._toast('Режим Бога доступен только в игре.', 2000);
+      return;
+    }
+
+    const enabled = !this.player.godMode;
+    this.player.setGodMode(enabled);
+    this._toast(enabled ? 'Режим Бога: ВКЛ — урон игнорируется.' : 'Режим Бога: ВЫКЛ.', 1800);
+    this._syncAdminToggles();
+  }
+
+  _spawnAdminDogfight() {
+    if (!this._canAdminSpawn()) {
+      this._toast('Догфайт доступен только в игре.', 2000);
+      return;
+    }
+
+    // Центр боя — впереди игрока, высоко над полем боя.
+    const forward = this.player.getLookDirection(new THREE.Vector3());
+    forward.y = 0;
+    if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
+    forward.normalize();
+
+    const center = new THREE.Vector3(
+      this.player.position.x + forward.x * 26,
+      44,
+      this.player.position.z + forward.z * 26
+    );
+
+    const spawned = this.aerial.spawnDogfight({ center, radius: 18 });
+    if (spawned) {
+      this._toast('Догфайт в небе: «Валькирия» против орочьего истребителя.', 2600);
+    } else {
+      this._toast('Лимит воздушных целей достигнут.', 2200);
+    }
+  }
+
+  _spawnAdminTank(variant) {
+    if (!this._canAdminSpawn()) {
+      this._toast('Спавн техники доступен только в игре.', 2000);
+      return;
+    }
+
+    const spot = this._getAdminSpawnPoint(9, 0);
+    const vehicle = this.vehicles.spawnTank(variant, {
+      x: spot.x,
+      z: spot.z,
+      yaw: this.player.yaw
+    });
+
+    this.vehicles.nearby = null;
+    this._toast(
+      `${vehicle.label} заспавнен. Подойдите и нажмите E, чтобы сесть.`,
+      3200
+    );
+  }
+
+  _spawnAdminValkyrie() {
+    if (!this._canAdminSpawn()) {
+      this._toast('Спавн техники доступен только в игре.', 2000);
+      return;
+    }
+
+    const spot = this._getAdminSpawnPoint(15, 0);
+    this.vehicles.spawnValkyrie({
+      x: spot.x,
+      y: 0,
+      z: spot.z,
+      yaw: this.player.yaw
+    });
+
+    this.vehicles.nearby = null;
+    this._toast(
+      '«Валькирия» заспавнена. E — сесть, Shift/Ctrl — высота, ЛКМ — огонь.',
+      3600
+    );
+  }
+
+  _toggleDebugPanel() {
+    if (!this.debugMode) return;
+    this.adminPanelVisible = !this.adminPanelVisible;
+    this.dom.debugPanel?.classList.toggle('hidden', !this.adminPanelVisible);
+    this._toast(
+      this.adminPanelVisible ? 'Админ-панель открыта.' : 'Админ-панель скрыта.',
+      1200
+    );
+  }
+
+  _toggleGraphicsSetting(key) {
+    if (!this.debugMode) return;
+
+    switch (key) {
+      case 'wireframe':
+        this._toggleWireframe();
+        break;
+      case 'post':
+        this._togglePostProcessing();
+        break;
+      case 'ssao':
+      case 'bloom':
+      case 'fxaa':
+        this._togglePostPass(key);
+        break;
+      case 'shadows':
+        this._toggleShadows();
+        break;
+      case 'fog':
+        this._toggleFog();
+        break;
+      default:
+        break;
+    }
+  }
+
+  _togglePostProcessing() {
+    if (!this.postProcessing) {
+      this._toast('Post-processing недоступен (запуск с ?nopost).', 2400);
+      return;
+    }
+
+    const enabled = !this.postProcessing.enabled;
+    this.postProcessing.setEnabled(enabled);
+    this._toast(`Post-processing: ${enabled ? 'ВКЛ' : 'ВЫКЛ'}`, 1500);
+    this._syncAdminToggles();
+  }
+
+  _togglePostPass(kind) {
+    const post = this.postProcessing;
+    if (!post) {
+      this._toast('Post-processing недоступен (запуск с ?nopost).', 2400);
+      return;
+    }
+
+    const entries = {
+      ssao: { pass: post.ssaoPass, label: 'SSAO' },
+      bloom: { pass: post.bloomPass, label: 'Bloom' },
+      fxaa: { pass: post.fxaaPass, label: 'FXAA' }
+    };
+
+    const entry = entries[kind];
+    if (!entry?.pass) {
+      this._toast(`${entry?.label || kind}: пасс не создан.`, 2000);
+      return;
+    }
+
+    entry.pass.enabled = !entry.pass.enabled;
+    if (kind === 'ssao') post.useSSAO = entry.pass.enabled;
+    if (kind === 'bloom') post.useBloom = entry.pass.enabled;
+    if (kind === 'fxaa') post.useFXAA = entry.pass.enabled;
+
+    this._toast(`${entry.label}: ${entry.pass.enabled ? 'ВКЛ' : 'ВЫКЛ'}`, 1400);
+    this._syncAdminToggles();
+  }
+
+  _toggleWireframe() {
+    if (!this.debugMode) return;
+
+    this.wireframeEnabled = !this.wireframeEnabled;
+    if (this.wireframeEnabled) {
+      this._applyWireframeTo(this.world.scene);
+    } else {
+      this._restoreWireframe();
+    }
+
+    this._toast(`Wireframe: ${this.wireframeEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, 1400);
+    this._syncAdminToggles();
+  }
+
+  // Переводит все «плотные» материалы сцены в каркасный вид.
+  _applyWireframeTo(root) {
+    if (!this.wireframeEnabled || !root) return;
+
+    root.traverse((child) => {
+      if (!child.isMesh || this._isWireframeExempt(child)) return;
+
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        if (!material) continue;
+        if (material.isShaderMaterial || material.isSpriteMaterial) continue;
+        if (!('wireframe' in material)) continue;
+        // Пропускаем прозрачные эффекты (солнце, дым, трассеры).
+        if (material.transparent && material.depthWrite === false) continue;
+
+        if (!this._wireframeMaterials.has(material)) {
+          this._wireframeMaterials.set(material, Boolean(material.wireframe));
+        }
+        material.wireframe = true;
+        material.needsUpdate = true;
+      }
+    });
+  }
+
+  _restoreWireframe() {
+    for (const [material, original] of this._wireframeMaterials) {
+      material.wireframe = original;
+      material.needsUpdate = true;
+    }
+    this._wireframeMaterials.clear();
+  }
+
+  _isWireframeExempt(object) {
+    let node = object;
+    while (node) {
+      if (node.name === 'sky-dome' || node.name === 'sky-sun') return true;
+      if (node.userData?.noWireframe) return true;
+      node = node.parent;
+    }
+    return false;
+  }
+
+  _toggleShadows() {
+    this.shadowsEnabled = !this.shadowsEnabled;
+
+    const renderer = this.world.renderer;
+    renderer.shadowMap.enabled = this.shadowsEnabled;
+
+    if (this.lighting?.csm) {
+      for (const light of this.lighting.csm.lights) {
+        light.castShadow = this.shadowsEnabled;
+      }
+      // Штатное солнце в CSM-режиме тень не рисует.
+      if (this.world.sun) this.world.sun.castShadow = false;
+    } else if (this.world.sun) {
+      this.world.sun.castShadow = this.shadowsEnabled;
+    }
+
+    renderer.shadowMap.needsUpdate = this.shadowsEnabled;
+    this._toast(`Тени: ${this.shadowsEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, 1400);
+    this._syncAdminToggles();
+  }
+
+  _toggleFog() {
+    this.fogEnabled = !this.fogEnabled;
+
+    if (this.fogEnabled) {
+      if (this._savedFog) this.world.scene.fog = this._savedFog;
+    } else {
+      this._savedFog = this.world.scene.fog;
+      this.world.scene.fog = null;
+    }
+
+    this._toast(`Туман: ${this.fogEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, 1400);
+    this._syncAdminToggles();
+  }
+
+  _syncAdminToggles() {
+    const post = this.postProcessing;
+
+    const states = {
+      wireframe: this.wireframeEnabled,
+      post: Boolean(post?.enabled),
+      ssao: Boolean(post?.ssaoPass?.enabled),
+      bloom: Boolean(post?.bloomPass?.enabled),
+      fxaa: Boolean(post?.fxaaPass?.enabled),
+      shadows: this.shadowsEnabled,
+      fog: this.fogEnabled
+    };
+
+    const availability = {
+      post: Boolean(post),
+      ssao: Boolean(post?.ssaoPass),
+      bloom: Boolean(post?.bloomPass),
+      fxaa: Boolean(post?.fxaaPass)
+    };
+
+    document.querySelectorAll('[data-debug-toggle]').forEach((button) => {
+      const key = button.dataset.debugToggle;
+      const available = availability[key] ?? true;
+      const active = Boolean(states[key]) && available;
+
+      button.classList.toggle('is-on', active);
+      button.classList.toggle('is-disabled', !available);
+      button.disabled = !available;
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    const godButton = document.querySelector('[data-debug-action="god"]');
+    if (godButton) {
+      const enabled = Boolean(this.player?.godMode);
+      godButton.classList.toggle('is-on', enabled);
+      godButton.textContent = enabled ? 'Режим Бога: ВКЛ' : 'Режим Бога: ВЫКЛ';
+    }
+
+    if (this.dom.debugPixelRatio) {
+      const ratio = this.world?.pixelRatioCap ?? CONFIG.render.maxPixelRatio;
+      this.dom.debugPixelRatio.value = String(ratio);
+      if (this.dom.debugPixelRatioValue) {
+        this.dom.debugPixelRatioValue.textContent = `${ratio.toFixed(2)}x`;
+      }
+    }
+  }
+
   _syncSettingsUi() {
     this.dom.sensitivity.value = String(this.settings.sensitivity);
     this.dom.sensitivityValue.textContent = this.settings.sensitivity.toFixed(2);
@@ -1655,6 +2093,32 @@ class Game {
       if (code === 'Backquote' && event?.shiftKey) {
         this._enableDebugMode();
         return;
+      }
+
+      // Админ-панель и графика (работают только после ввода пароля).
+      if (this.debugMode) {
+        if (code === 'F1') {
+          this._toggleDebugPanel();
+          return;
+        }
+
+        if (code === 'F2') {
+          this._toggleWireframe();
+          return;
+        }
+
+        if (code === 'F3') {
+          this._togglePostProcessing();
+          return;
+        }
+
+        if (code === 'KeyH') {
+          this._adminRestoreHealth();
+          return;
+        }
+
+        // Режим Бога переключается только кнопкой в панели.
+        // (ранее KeyG конфликтовал с броском гранаты)
       }
 
       // Noclip в дебаг-режиме.
@@ -1705,6 +2169,9 @@ class Game {
   // Единая точка смены темы: туман/фон — мир, каскады/свет — lighting.
   _applyTheme(name) {
     this.world.applyTheme(name);
+    // Запоминаем «штатный» туман темы и соблюдаем админ-переключатель.
+    this._savedFog = this.world.scene.fog;
+    if (!this.fogEnabled) this.world.scene.fog = null;
     this.lighting?.applyTheme(name);
   }
 
@@ -1729,6 +2196,7 @@ class Game {
 
     // Новые материалы (мишени, враги) должны получить CSM-шейдер.
     this.lighting.refreshMaterials(this.world.scene);
+    this._applyWireframeTo(this.world.scene);
 
     // Мишени восстанавливаются при каждом новом старте.
     for (const target of this._targets) {
@@ -1828,6 +2296,8 @@ class Game {
     this._createTarget(-3.5, -9);
     this._createTarget(0, -12);
     this._createTarget(3.5, -9);
+
+    this._applyWireframeTo(arena);
 
     console.info('[Arena] Done: walls/covers/ground added, targets:', this._targets.length);
   }
@@ -2091,6 +2561,7 @@ class Game {
 
   _onPlayerDeath() {
     this.hud.toast('Комиссар погиб. Император не прощает слабости.', CONFIG.timings.deathDelay);
+    this.vehicles?.forceExit();
     this.weapons.setActive(false);
 
     window.setTimeout(() => {
@@ -2196,7 +2667,8 @@ class Game {
       const displayY = this.player.noclip ? position.y : CONFIG.player.eyeHeight;
       this.dom.debugCoords.textContent =
         `X ${position.x.toFixed(1)} · Y ${displayY.toFixed(1)} · Z ${position.z.toFixed(1)}` +
-        (this.player.noclip ? ' · NOCLIP' : '');
+        (this.player.noclip ? ' · NOCLIP' : '') +
+        (this.player.godMode ? ' · GOD' : '');
     }
 
     if (!this.debugEnabled && !this.debugMode) return;
@@ -2208,10 +2680,14 @@ class Game {
       const fps = this.debugFrames / this.debugAccum;
       // renderer.info учитывает все проходы кадра: shadow map'ы, SSAO, сцену.
       const info = this.world.renderer.info.render;
+      const postState = this.postProcessing
+        ? (this.postProcessing.enabled ? 'on' : 'off')
+        : 'off';
       this.dom.debug.textContent =
         `FPS ${fps.toFixed(0)} | calls ${info.calls} | tris ${info.triangles} | ` +
         `CSM ${this.lighting.enabled ? 'on' : 'off'} | ` +
-        `post ${this.postProcessing ? 'on' : 'off'}`;
+        `post ${postState} | wire ${this.wireframeEnabled ? 'on' : 'off'} | ` +
+        `shadows ${this.shadowsEnabled ? 'on' : 'off'}`;
       this.debugAccum = 0;
       this.debugFrames = 0;
     }

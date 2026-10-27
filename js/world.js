@@ -17,6 +17,9 @@ export class World {
     this.menuMode = true;
     this.menuAngle = 0.35;
 
+    // Ограничение pixel ratio можно менять из админ-панели.
+    this.pixelRatioCap = CONFIG.render.maxPixelRatio;
+
     this.pointLights = [];
     this.backdrop = null;
     this.dust = null;
@@ -44,7 +47,7 @@ export class World {
       stencil: false
     });
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.render.maxPixelRatio));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.pixelRatioCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -364,6 +367,18 @@ export class World {
     window.addEventListener('resize', () => this.resize());
   }
 
+  // Смена ограничения pixel ratio (админ-панель: «Разрешение»).
+  setPixelRatioCap(cap) {
+    const value = Number(cap);
+    this.pixelRatioCap = Number.isFinite(value)
+      ? Math.max(0.5, Math.min(2, value))
+      : CONFIG.render.maxPixelRatio;
+
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.pixelRatioCap));
+    this.renderer.setSize(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight), false);
+    return this.pixelRatioCap;
+  }
+
   resize() {
     const width = Math.max(1, window.innerWidth);
     const height = Math.max(1, window.innerHeight);
@@ -371,7 +386,7 @@ export class World {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.render.maxPixelRatio));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.pixelRatioCap));
     this.renderer.setSize(width, height, false);
   }
 }

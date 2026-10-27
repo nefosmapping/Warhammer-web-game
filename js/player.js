@@ -28,6 +28,8 @@ export class Player {
 
     // Дебаг-режим: свободный полёт без гравитации и коллизий.
     this.noclip = false;
+    // Админ-режим: полный иммунитет к урону.
+    this.godMode = false;
 
     this.walkPhase = 0;
     this.bob = 0;
@@ -89,6 +91,10 @@ export class Player {
     } else {
       this.position.y = 0;
     }
+  }
+
+  setGodMode(enabled) {
+    this.godMode = Boolean(enabled);
   }
 
   get eyeHeight() {
@@ -269,7 +275,8 @@ export class Player {
   // -------------------------------------------------------------------------
 
   takeDamage(amount, source = 'unknown') {
-    if (this.dead || amount <= 0) return;
+    // Режим Бога из админ-панели: урон полностью игнорируется.
+    if (this.dead || this.godMode || amount <= 0) return;
 
     const absorbed = Math.min(this.armor, amount * CONFIG.player.armorAbsorb);
     this.armor -= absorbed;

@@ -19,6 +19,7 @@ export class HUD {
     this.lockFrame = this.lockIndicator?.querySelector('.lock-frame') || null;
     this.lockLabel = this.lockIndicator?.querySelector('.lock-label') || null;
     this.objective = document.getElementById('objective');
+    this.vehiclePrompt = document.getElementById('vehicle-prompt');
     this.toastEl = document.getElementById('toast');
     this.tutorial = document.getElementById('tutorial-active');
     this.tutorialText = document.getElementById('tutorial-text');
@@ -105,6 +106,22 @@ export class HUD {
     this._hitTimer = window.setTimeout(() => {
       this.hitmarker.classList.remove('is-active');
     }, 120);
+  }
+
+  // Подсказка о посадке в технику / управлении техникой.
+  setVehiclePrompt(text) {
+    if (!this.vehiclePrompt) return;
+
+    if (!text) {
+      this.vehiclePrompt.classList.add('hidden');
+      this.vehiclePrompt.textContent = '';
+      return;
+    }
+
+    if (this.vehiclePrompt.textContent !== text) {
+      this.vehiclePrompt.textContent = text;
+    }
+    this.vehiclePrompt.classList.remove('hidden');
   }
 
   setObjective(text, duration = 0) {

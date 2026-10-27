@@ -66,6 +66,8 @@
 
       <div id="objective" class="objective hidden">Добраться до штаба</div>
 
+      <div id="vehicle-prompt" class="vehicle-prompt hidden"></div>
+
       <div id="tutorial-active" class="tutorial-bar hidden">
         <div id="tutorial-text" class="tutorial-text">Туториал</div>
         <div class="tutorial-progress"><div id="tutorial-fill" class="tutorial-fill"></div></div>
@@ -199,9 +201,55 @@
         <button class="debug-level-btn debug-spawn" data-debug-action="spawn-ork">+ Орк</button>
         <button class="debug-level-btn debug-spawn" data-debug-action="spawn-guard">+ Гвардеец</button>
       </div>
+
+      <div class="debug-panel-section">
+        <div class="debug-panel-section-title">ИГРОК</div>
+        <div class="debug-panel-levels">
+          <button class="debug-level-btn debug-wide" data-debug-action="heal">Полное здоровье [H]</button>
+          <button class="debug-level-btn debug-wide" data-debug-action="god">Режим Бога</button>
+        </div>
+      </div>
+
+      <div class="debug-panel-section">
+        <div class="debug-panel-section-title">ВОЗДУШНЫЙ БОЙ</div>
+        <div class="debug-panel-levels">
+          <button class="debug-level-btn debug-wide" data-debug-action="dogfight">Догфайт в небе</button>
+        </div>
+      </div>
+
+      <div class="debug-panel-section">
+        <div class="debug-panel-section-title">ТЕХНИКА</div>
+        <div class="debug-panel-levels">
+          <button class="debug-level-btn debug-wide debug-tank" data-debug-action="spawn-tank-deepseek">Леман Русс · DeepSeek</button>
+          <button class="debug-level-btn debug-wide debug-tank" data-debug-action="spawn-tank-chatgpt">Леман Русс · ChatGPT</button>
+          <button class="debug-level-btn debug-wide debug-vehicle" data-debug-action="spawn-valkyrie">Валькирия</button>
+        </div>
+      </div>
+
+      <div class="debug-panel-section">
+        <div class="debug-panel-section-title">ГРАФИКА</div>
+        <div class="debug-panel-levels">
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="wireframe">Wireframe [F2]</button>
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="post">Post FX [F3]</button>
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="ssao">SSAO</button>
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="bloom">Bloom</button>
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="fxaa">FXAA</button>
+          <button class="debug-level-btn debug-toggle" data-debug-toggle="shadows">Тени</button>
+          <button class="debug-level-btn debug-toggle debug-wide" data-debug-toggle="fog">Туман</button>
+        </div>
+        <label class="debug-range-row">
+          <span>Разрешение</span>
+          <input id="debug-pixel-ratio" class="debug-range" type="range" min="0.5" max="2" step="0.25" value="1.5">
+          <output id="debug-pixel-ratio-value" class="debug-range-value">1.50x</output>
+        </label>
+      </div>
+
       <div class="debug-panel-hint">
-        Y — свободный полёт · 4 — ПЗРК<br>
-        Колёсико мыши — приказ гвардейцам
+        F1 — панель · F2 — wireframe · F3 — post-processing<br>
+        H — здоровье · God Mode — кнопкой в панели<br>
+        E — сесть в технику / выйти · ЛКМ — огонь<br>
+        Валькирия: Shift — вверх · Ctrl — вниз<br>
+        Y — свободный полёт · 4 — ПЗРК · колёсико — приказ гвардейцам
       </div>
     </div>
 

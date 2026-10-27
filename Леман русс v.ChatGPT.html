@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Leman Russ — Refined Warhammer 40K Tank</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #1a1c1f; color: #ddd; font-family: monospace; user-select: none; }
+    
+    .panel { position: absolute; background: rgba(20, 20, 20, 0.9); padding: 15px; border-radius: 5px; border: 1px solid #555; pointer-events: auto; z-index: 10; }
+    h2 { margin: 0 0 10px 0; font-size: 16px; color: #8bb1c9; border-bottom: 1px solid #444; padding-bottom: 5px; }
+    button { background: #333; color: #fff; border: 1px solid #555; padding: 8px; cursor: pointer; font-family: monospace; font-size: 12px; transition: background 0.2s; width: 100%; margin-bottom: 5px; }
+    button:hover { background: #444; }
+    button.active { background: #8bb1c9; color: #000; font-weight: bold; border-color: #8bb1c9; }
+    .btn-green { background: #2a5a2a; border-color: #4a7a4a; }
+    .btn-green:hover { background: #3a6a3a; }
+    .btn-red { background: #5a2a2a; border-color: #7a4a4a; }
+    .btn-red:hover { background: #6a3a3a; }
+
+    #ui-viewer { top: 20px; left: 20px; width: 220px; }
+    #ui-drive { bottom: 20px; left: 20px; width: 250px; display: none; }
+    .stat { font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }
+    .stat span { color: #ffaa00; }
+    #reload-bar { width: 100%; height: 6px; background: #333; margin-top: 10px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+    #reload-fill { width: 100%; height: 100%; background: #ffaa00; transition: width 0.1s; }
+    
+    /* --- ЗЕЛЕНЫЙ ПРИЦЕЛ (Стиль Bradley) --- */
+    #scope-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; display: none; z-index: 5;
+      background: radial-gradient(circle, rgba(0, 0, 0, 0) 40%, rgba(10, 20, 10, 0.9) 60%, #000 80%);
+      box-shadow: inset 0 0 150px rgba(0, 50, 0, 0.5);
+    }
+    
+    /* Зеленая тонировка */
+    #scope-overlay::before {
+      content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 255, 0, 0.1); mix-blend-mode: screen;
+    }
+
+    .reticle { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 600px; height: 600px; }
+    .reticle-center { position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; background: #00ff00; transform: translate(-50%, -50%); border-radius: 50%; }
+    
+    /* Перекрестие */
+    .reticle-line-h { position: absolute; top: 50%; left: 0; width: 100%; height: 2px; background: #00ff00; transform: translateY(-50%); opacity: 0.8; }
+    .reticle-line-v { position: absolute; top: 0; left: 50%; width: 2px; height: 100%; background: #00ff00; transform: translateX(-50%); opacity: 0.8; }
+    
+    /* Метки дальности */
+    .range-mark { position: absolute; left: 50%; width: 40px; height: 4px; background: #00ff00; transform: translateX(-50%); opacity: 0.6; }
+    .range-mark::after { content: attr(data-val); position: absolute; left: 50px; top: -8px; color: #00ff00; font-size: 10px; font-family: monospace; }
+    
+    /* Угловые скобки */
+    .corner { position: absolute; width: 100px; height: 100px; border: 2px solid #00ff00; opacity: 0.5; }
+    .corner-tl { top: 10%; left: 10%; border-right: none; border-bottom: none; }
+    .corner-tr { top: 10%; right: 10%; border-left: none; border-bottom: none; }
+    .corner-bl { bottom: 10%; left: 10%; border-right: none; border-top: none; }
+    .corner-br { bottom: 10%; right: 10%; border-left: none; border-top: none; }
+
+    #instructions { position: absolute; top: 20px; right: 20px; font-size: 12px; color: #888; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 5px; pointer-events: none; display: none; text-align: right; z-index: 10; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- UI Осмотра -->
+  <div id="ui-viewer" class="panel">
+    <h2>Leman Russ</h2>
+    <button id="btn-anim-idle" class="active">Статика</button>
+    <button id="btn-anim-move">Движение</button>
+    <button id="btn-anim-shoot">Выстрел</button>
+    <button id="btn-enter" class="btn-green" style="margin-top: 15px;">Сесть за руль</button>
+  </div>
+
+  <!-- UI Вождения -->
+  <div id="ui-drive" class="panel">
+    <h2>Управление</h2>
+    <div class="stat">Скорость: <span id="val-speed">0</span> км/ч</div>
+    <div class="stat">Угол башни: <span id="val-turret">0</span>°</div>
+    <div class="stat">Орудие: <span id="val-gun" style="color: #00ff00;">ГОТОВО</span></div>
+    <div id="reload-bar"><div id="reload-fill"></div></div>
+    <button id="btn-exit" class="btn-red">Выйти из танка</button>
+  </div>
+
+  <div id="instructions">
+    <b>W/S</b> - Вперед/Назад<br>
+    <b>A/D</b> - Поворот корпуса<br>
+    <b>X</b> - Прицел (Орудие)<br>
+    <b>Мышь</b> - Башня и наведение<br>
+    <b>ЛКМ</b> - Выстрел
+  </div>
+
+  <!-- Оверлей прицела -->
+  <div id="scope-overlay">
+    <div class="reticle">
+      <div class="reticle-line-h"></div>
+      <div class="reticle-line-v"></div>
+      <div class="reticle-center"></div>
+      
+      <!-- Метки -->
+      <div class="range-mark" style="top: 40%;" data-val="800"></div>
+      <div class="range-mark" style="top: 45%;" data-val="1000"></div>
+      <div class="range-mark" style="top: 55%;" data-val="1200"></div>
+      <div class="range-mark" style="top: 60%;" data-val="1400"></div>
+      
+      <div class="corner corner-tl"></div>
+      <div class="corner corner-tr"></div>
+      <div class="corner corner-bl"></div>
+      <div class="corner corner-br"></div>
+    </div>
+  </div>
+
+  <script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+// Leman Russ — revised low-poly / hard-surface model.
+const $ = (id) => document.getElementById(id);
+const C = {
+  green: 0x596348, green2: 0x464f38, green3: 0x70745a,
+  khaki: 0x9a906e, khakiLight: 0xb2a784, shadowGreen: 0x333b2e,
+  metal: 0x292b29, metal2: 0x454842, steel: 0x77766a,
+  rubber: 0x171918, red: 0x9d342d, ivory: 0xd9d0b0,
+  glass: 0x273f43, black: 0x101211
+};
+const mat = (color, roughness = 0.82, metalness = 0.18, extra = {}) =>
+  new THREE.MeshStandardMaterial({ color, roughness, metalness, ...extra });
+const M = {
+  green: mat(C.green), green2: mat(C.green2), green3: mat(C.green3),
+  khaki: mat(C.khaki), khakiLight: mat(C.khakiLight), shadowGreen: mat(C.shadowGreen),
+  metal: mat(C.metal, 0.75, 0.45), metal2: mat(C.metal2, 0.72, 0.5), steel: mat(C.steel, 0.48, 0.68),
+  rubber: mat(C.rubber, 0.98, 0.02), red: mat(C.red, 0.72, 0.08), ivory: mat(C.ivory, 0.8, 0.05),
+  glass: mat(C.glass, 0.22, 0.45, { emissive: 0x142a2a, emissiveIntensity: 0.22 }), black: mat(C.black, 0.95, 0.05),
+  light: mat(0xd7c79d, 0.35, 0.25, { emissive: 0x5d4928, emissiveIntensity: 0.25 })
+};
+
+function roundedBox(parent, size, material, position, rotation = [0, 0, 0], bevel = 0.055) {
+  const [w, h, d] = size;
+  const radius = Math.max(0.005, Math.min(bevel, w * 0.22, h * 0.22, d * 0.22));
+  const mesh = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 2, radius), material);
+  mesh.position.set(...position);
+  mesh.rotation.set(...rotation);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+function box(parent, size, material, position, rotation = [0, 0, 0]) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+  mesh.position.set(...position);
+  mesh.rotation.set(...rotation);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+function cylinder(parent, rt, rb, height, material, position, rotation = [0, 0, 0], segments = 18) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, height, segments, 1), material);
+  mesh.position.set(...position);
+  mesh.rotation.set(...rotation);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+function cylZ(parent, radiusTop, radiusBottom, length, material, position, segments = 20) {
+  return cylinder(parent, radiusTop, radiusBottom, length, material, position, [Math.PI / 2, 0, 0], segments);
+}
+function cylX(parent, radiusTop, radiusBottom, length, material, position, segments = 20) {
+  return cylinder(parent, radiusTop, radiusBottom, length, material, position, [0, 0, Math.PI / 2], segments);
+}
+
+// Extruded, angled side profile gives the lower hull a proper sloped glacis.
+function sideProfileGeometry(width, profile, bevel = 0.045) {
+  const shape = new THREE.Shape();
+  profile.forEach(([z, y], i) => {
+    const x = -z; // after rotation this becomes world Z = z
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  });
+  shape.closePath();
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: width, bevelEnabled: true, bevelSegments: 2,
+    bevelSize: bevel, bevelThickness: bevel, curveSegments: 1
+  });
+  g.translate(0, 0, -width / 2);
+  g.rotateY(Math.PI / 2);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Flat clipped-corner plan extruded vertically for the iconic polygonal turret.
+function clippedPrism(width, depth, height, cut = 0.28) {
+  const w = width / 2, d = depth / 2, c = Math.min(cut, w * 0.45, d * 0.45);
+  const plan = [
+    [-w + c, -d], [w - c, -d], [w, -d + c], [w, d - c],
+    [w - c, d], [-w + c, d], [-w, d - c], [-w, -d + c]
+  ];
+  const shape = new THREE.Shape();
+  plan.forEach(([x, z], i) => {
+    const y = -z;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  });
+  shape.closePath();
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: height, bevelEnabled: true, bevelSegments: 2,
+    bevelSize: 0.045, bevelThickness: 0.045, curveSegments: 1
+  });
+  g.translate(0, 0, -height / 2);
+  g.rotateX(-Math.PI / 2);
+  g.computeVertexNormals();
+  return g;
+}
+
+function makeTrackTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#242725'; ctx.fillRect(0, 0, 128, 128);
+  for (let y = 0; y < 128; y += 16) {
+    ctx.fillStyle = y % 32 === 0 ? '#3d403c' : '#30332f';
+    ctx.fillRect(0, y + 2, 128, 11);
+    ctx.fillStyle = '#111312'; ctx.fillRect(0, y + 13, 128, 3);
+    ctx.fillStyle = '#565851'; ctx.fillRect(0, y + 3, 128, 2);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 8);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const trackTex = makeTrackTexture();
+const trackBaseMat = new THREE.MeshStandardMaterial({ map: trackTex, color: 0xb2b2a6, roughness: 0.96, metalness: 0.12 });
+
+function makeTextTexture(text, opts = {}) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = 176;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `900 ${opts.fontSize || 108}px Arial Black, Impact, sans-serif`;
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(40,38,30,0.65)';
+  ctx.strokeText(text, 256, 88);
+  ctx.fillStyle = opts.color || '#d8d0b5';
+  ctx.fillText(text, 256, 88);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const numberTexture = makeTextTexture('323');
+const numberMaterial = new THREE.MeshBasicMaterial({ map: numberTexture, transparent: true, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+
+// Stadium-shaped track path sampled for separate chunky track shoes.
+function trackPathAt(distance) {
+  const half = 2.55, r = 0.73, centerY = 0.82;
+  const straight = half * 2, arc = Math.PI * r;
+  const total = straight * 2 + arc * 2;
+  let s = ((distance % total) + total) % total;
+  if (s < straight) return { z: -half + s, y: centerY - r, dz: 1, dy: 0 };
+  s -= straight;
+  if (s < arc) {
+    const a = -Math.PI / 2 + s / r;
+    return { z: half + r * Math.cos(a), y: centerY + r * Math.sin(a), dz: -Math.sin(a), dy: Math.cos(a) };
+  }
+  s -= arc;
+  if (s < straight) return { z: half - s, y: centerY + r, dz: -1, dy: 0 };
+  s -= straight;
+  const a = Math.PI / 2 + s / r;
+  return { z: -half + r * Math.cos(a), y: centerY + r * Math.sin(a), dz: -Math.sin(a), dy: Math.cos(a) };
+}
+
+function buildTank() {
+  const root = new THREE.Group();
+  root.name = 'LemanRussRoot';
+  const exhaustPoints = [];
+  const trackGroups = [];
+
+  // MAIN HULL: sloped front, raised engine deck and angled rear plate.
+  const hullGeo = sideProfileGeometry(4.2, [
+    [-3.82, 0.48], [-3.62, 1.18], [-2.62, 1.92],
+    [2.63, 1.92], [3.46, 1.42], [3.63, 0.52]
+  ], 0.055);
+  const hull = new THREE.Mesh(hullGeo, M.green);
+  hull.castShadow = hull.receiveShadow = true;
+  root.add(hull);
+
+  // Upper deck and the characteristic two-tier rear engine casing.
+  roundedBox(root, [3.78, 0.42, 4.95], M.green2, [0, 1.82, 0.05], [0, 0, 0], 0.11);
+  roundedBox(root, [3.28, 0.38, 2.0], M.khaki, [0, 2.03, 2.42], [0.02, 0, 0], 0.1);
+  roundedBox(root, [3.58, 0.22, 1.05], M.green3, [0, 1.82, 3.0], [-0.08, 0, 0], 0.06);
+  roundedBox(root, [3.5, 0.12, 1.42], M.green, [0, 2.19, 2.32], [0, 0, 0], 0.04);
+
+  // Engine ventilation louvres and rear service plates.
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 5; i++) {
+      roundedBox(root, [0.09, 0.045, 0.78], M.metal, [side * (0.62 + i * 0.13), 2.255, 2.35], [0.05, 0, 0], 0.012);
+    }
+    roundedBox(root, [0.54, 0.14, 0.75], M.green2, [side * 1.52, 1.98, 2.75], [0, 0, 0], 0.04);
+    // Tall exhaust stack, collars and blackened opening.
+    roundedBox(root, [0.55, 0.42, 0.62], M.green2, [side * 1.62, 1.95, 3.18], [0.05, 0, 0], 0.055);
+    cylinder(root, 0.22, 0.25, 0.58, M.metal, [side * 1.62, 2.31, 3.2], [0, 0, 0], 14);
+    cylinder(root, 0.19, 0.19, 0.05, M.black, [side * 1.62, 2.61, 3.2], [0, 0, 0], 14);
+    cylinder(root, 0.235, 0.235, 0.075, M.steel, [side * 1.62, 2.52, 3.2], [0, 0, 0], 14);
+    const ep = new THREE.Object3D(); ep.position.set(side * 1.62, 2.65, 3.22); root.add(ep); exhaustPoints.push(ep);
+
+    // Side armour / fender ledge above the track, broken into heavy plates.
+    roundedBox(root, [0.72, 0.16, 5.65], M.green2, [side * 2.15, 1.98, 0.02], [0, 0, 0], 0.045);
+    roundedBox(root, [0.52, 0.12, 1.18], M.khaki, [side * 2.34, 1.83, -2.18], [-0.12, 0, 0], 0.035);
+    roundedBox(root, [0.52, 0.12, 1.15], M.green3, [side * 2.34, 1.83, 1.65], [0.1, 0, 0], 0.035);
+
+    // Side sponson: armoured gun box and a short forward-facing heavy bolter.
+    roundedBox(root, [0.92, 0.98, 1.28], M.green2, [side * 2.35, 1.28, -1.23], [0.02, 0, 0], 0.09);
+    roundedBox(root, [0.98, 0.69, 0.19], M.green3, [side * 2.38, 1.31, -1.91], [-0.04, 0, 0], 0.05);
+    roundedBox(root, [0.54, 0.32, 0.15], M.metal, [side * 2.38, 1.26, -2.03], [0, 0, 0], 0.025);
+    cylZ(root, 0.115, 0.14, 0.62, M.metal, [side * 2.38, 1.25, -2.32], 16);
+    cylZ(root, 0.16, 0.16, 0.12, M.steel, [side * 2.38, 1.25, -2.68], 16);
+    cylZ(root, 0.095, 0.095, 0.14, M.black, [side * 2.38, 1.25, -2.75], 16);
+    // Sponson bolts and a small vision slit.
+    for (let i = 0; i < 4; i++) {
+      cylinder(root, 0.045, 0.045, 0.04, M.steel, [side * 2.83, 0.96 + i * 0.2, -1.7], [0, 0, Math.PI / 2], 8);
+    }
+    box(root, [0.035, 0.09, 0.34], M.glass, [side * 2.825, 1.52, -1.4]);
+
+    // Red / ivory / red regimental stripe on the side plate.
+    box(root, [0.045, 0.72, 0.075], M.red, [side * 2.145, 1.45, -0.165]);
+    box(root, [0.048, 0.72, 0.075], M.ivory, [side * 2.15, 1.45, -0.08]);
+    box(root, [0.05, 0.72, 0.075], M.red, [side * 2.155, 1.45, 0.005]);
+
+    // Side plates, handles, rivets and spare equipment stowage.
+    roundedBox(root, [0.09, 0.5, 1.12], M.green3, [side * 2.12, 1.02, 1.22], [0.06, 0, 0], 0.035);
+    roundedBox(root, [0.18, 0.28, 0.88], M.khaki, [side * 2.19, 0.89, 2.25], [0.04, 0, 0], 0.04);
+    roundedBox(root, [0.18, 0.22, 0.62], M.green, [side * 2.22, 0.78, 2.82], [0, 0, 0], 0.035);
+    for (let i = 0; i < 9; i++) {
+      cylinder(root, 0.035, 0.035, 0.065, M.steel, [side * 2.12, 0.72 + (i % 3) * 0.36, -2.8 + Math.floor(i / 3) * 0.55], [0, 0, Math.PI / 2], 8);
+    }
+    // Tow hooks visible on both sides.
+    const hook = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.035, 8, 14, Math.PI * 1.7), M.metal2);
+    hook.position.set(side * 2.12, 0.64, 3.25); hook.rotation.y = side * Math.PI / 2; hook.castShadow = true; root.add(hook);
+  }
+
+  // Sloped glacis armour plate, centre hatch and front details.
+  roundedBox(root, [3.58, 0.14, 1.38], M.khaki, [0, 1.63, -3.07], [-0.45, 0, 0], 0.045);
+  roundedBox(root, [2.75, 0.08, 0.54], M.green3, [0, 1.88, -2.64], [-0.45, 0, 0], 0.025);
+  // Front lower plate, tow eyes and headlamps.
+  roundedBox(root, [3.42, 0.42, 0.18], M.green2, [0, 0.72, -3.68], [-0.16, 0, 0], 0.04);
+  for (const side of [-1, 1]) {
+    cylinder(root, 0.15, 0.15, 0.1, M.metal, [side * 1.42, 1.23, -3.55], [Math.PI / 2, 0, 0], 14);
+    cylinder(root, 0.105, 0.105, 0.04, M.light, [side * 1.42, 1.23, -3.62], [Math.PI / 2, 0, 0], 14);
+    roundedBox(root, [0.38, 0.16, 0.28], M.green2, [side * 1.68, 1.02, -3.4], [-0.3, 0, 0], 0.03);
+    // Front tow shackle.
+    const tow = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.04, 8, 16), M.metal2);
+    tow.position.set(side * 1.05, 0.62, -3.73); tow.rotation.x = Math.PI / 2; tow.castShadow = true; root.add(tow);
+  }
+  // Hull-mounted heavy bolter in a square armoured port.
+  roundedBox(root, [0.82, 0.66, 0.24], M.green2, [0, 1.13, -3.71], [0, 0, 0], 0.07);
+  roundedBox(root, [0.52, 0.38, 0.12], M.metal, [0, 1.13, -3.86], [0, 0, 0], 0.04);
+  cylZ(root, 0.12, 0.14, 0.6, M.metal, [0, 1.13, -4.12], 16);
+  cylZ(root, 0.15, 0.15, 0.12, M.steel, [0, 1.13, -4.43], 16);
+  cylZ(root, 0.085, 0.085, 0.14, M.black, [0, 1.13, -4.51], 16);
+
+  // Tracks: thick dark belt plus individual iron shoes with raised cleats.
+  const half = 2.55, radius = 0.73, trackLength = half * 4 + Math.PI * radius * 2;
+  const beltShape = new THREE.Shape();
+  beltShape.moveTo(-half, 0.82 - radius);
+  beltShape.lineTo(half, 0.82 - radius);
+  beltShape.absarc(half, 0.82, radius, -Math.PI / 2, Math.PI / 2, false);
+  beltShape.lineTo(-half, 0.82 + radius);
+  beltShape.absarc(-half, 0.82, radius, Math.PI / 2, Math.PI * 1.5, false);
+  beltShape.closePath();
+  const beltGeo = new THREE.ExtrudeGeometry(beltShape, { depth: 0.72, bevelEnabled: true, bevelSegments: 2, bevelSize: 0.045, bevelThickness: 0.04 });
+  beltGeo.translate(0, 0, -0.36); beltGeo.rotateY(Math.PI / 2);
+  const shoeMat = mat(0x454741, 0.92, 0.25);
+  const shoeEdgeMat = mat(0x30332f, 0.92, 0.18);
+  for (const side of [-1, 1]) {
+    const belt = new THREE.Mesh(beltGeo, trackBaseMat);
+    belt.position.x = side * 2.34; belt.castShadow = belt.receiveShadow = true; root.add(belt);
+    const tg = new THREE.Group(); tg.position.x = side * 2.34; root.add(tg); trackGroups.push(tg);
+    const shoeCount = 48;
+    for (let i = 0; i < shoeCount; i++) {
+      const p = trackPathAt(trackLength * i / shoeCount);
+      const angle = -Math.atan2(p.dy, p.dz);
+      roundedBox(tg, [0.68, 0.125, trackLength / shoeCount * 0.84], i % 4 === 0 ? shoeMat : shoeEdgeMat, [0, p.y, p.z], [angle, 0, 0], 0.024);
+      // Raised transverse grip bars on every second shoe.
+      if (i % 2 === 0) box(tg, [0.61, 0.035, 0.055], M.metal2, [0, p.y + 0.078, p.z], [angle, 0, 0]);
+      // End-pin caps are deliberately subtle so the track remains readable.
+      if (i % 3 === 0) {
+        cylinder(tg, 0.028, 0.028, 0.035, M.steel, [side * 0.325, p.y, p.z], [0, 0, Math.PI / 2], 7);
+        cylinder(tg, 0.028, 0.028, 0.035, M.steel, [-side * 0.325, p.y, p.z], [0, 0, Math.PI / 2], 7);
+      }
+    }
+
+    // Main road wheels, hubs, bolts and the front/rear idlers.
+    const wheelZs = [-2.12, -1.42, -0.72, 0.0, 0.72, 1.42, 2.12];
+    wheelZs.forEach((z, idx) => {
+      const r = idx === 0 || idx === wheelZs.length - 1 ? 0.43 : 0.405;
+      cylX(root, r, r, 0.43, M.metal, [side * 2.34, 0.82, z], 22);
+      cylX(root, r * 0.62, r * 0.62, 0.06, idx % 2 ? M.green3 : M.khaki, [side * 2.58, 0.82, z], 16);
+      cylX(root, r * 0.27, r * 0.27, 0.075, M.metal2, [side * 2.62, 0.82, z], 12);
+      for (let b = 0; b < 8; b++) {
+        const a = b * Math.PI / 4;
+        cylinder(root, 0.027, 0.027, 0.025, M.steel,
+          [side * 2.63, 0.82 + Math.cos(a) * r * 0.43, z + Math.sin(a) * r * 0.43],
+          [0, 0, Math.PI / 2], 7);
+      }
+    });
+    // Drive sprocket at the rear, with 12 chunky teeth.
+    cylX(root, 0.57, 0.57, 0.43, M.metal, [side * 2.34, 0.82, 2.66], 20);
+    cylX(root, 0.36, 0.36, 0.08, M.green3, [side * 2.59, 0.82, 2.66], 16);
+    for (let t = 0; t < 12; t++) {
+      const a = t * Math.PI * 2 / 12;
+      roundedBox(root, [0.42, 0.14, 0.18], M.metal2,
+        [side * 2.34, 0.82 + Math.cos(a) * 0.55, 2.66 + Math.sin(a) * 0.55], [a, 0, 0], 0.018);
+    }
+    // Small return rollers visible under the top run.
+    for (const z of [-1.65, -0.55, 0.55, 1.65]) {
+      cylX(root, 0.16, 0.16, 0.36, M.metal2, [side * 2.34, 1.42, z], 14);
+      cylX(root, 0.075, 0.075, 0.05, M.steel, [side * 2.55, 1.42, z], 10);
+    }
+  }
+
+  // Turret ring and rotating polygonal turret.
+  const turretGroup = new THREE.Group();
+  turretGroup.position.set(0, 2.0, 0.18);
+  root.add(turretGroup);
+  cylinder(turretGroup, 1.47, 1.47, 0.24, M.metal, [0, 0.08, 0.05], [0, 0, 0], 12);
+  cylinder(turretGroup, 1.36, 1.36, 0.12, M.green3, [0, 0.2, 0.05], [0, 0, 0], 12);
+  const turretBody = new THREE.Mesh(clippedPrism(2.86, 2.62, 1.08, 0.36), M.khaki);
+  turretBody.position.set(0, 0.78, 0.08); turretBody.castShadow = turretBody.receiveShadow = true; turretGroup.add(turretBody);
+
+  // Faceted turret front, cheek plates and mantlet.
+  roundedBox(turretGroup, [2.16, 0.75, 0.38], M.green3, [0, 0.82, -1.12], [-0.16, 0, 0], 0.09);
+  roundedBox(turretGroup, [0.52, 0.78, 0.28], M.green2, [-1.12, 0.76, -0.98], [-0.22, 0, -0.06], 0.07);
+  roundedBox(turretGroup, [0.52, 0.78, 0.28], M.khakiLight, [1.12, 0.76, -0.98], [-0.22, 0, 0.06], 0.07);
+  roundedBox(turretGroup, [1.06, 0.82, 0.48], M.green2, [0, 0.69, -1.25], [-0.05, 0, 0], 0.1);
+  cylinder(turretGroup, 0.49, 0.53, 0.24, M.metal, [0, 0.69, -1.47], [Math.PI / 2, 0, 0], 16);
+  cylinder(turretGroup, 0.39, 0.43, 0.2, M.green3, [0, 0.69, -1.6], [Math.PI / 2, 0, 0], 16);
+
+  // Cannon group is independently elevated and recoils when fired.
+  const gunGroup = new THREE.Group();
+  gunGroup.position.set(0, 0.68, -1.45);
+  turretGroup.add(gunGroup);
+  cylZ(gunGroup, 0.225, 0.24, 1.55, M.metal, [0, 0, -0.95], 20);
+  cylZ(gunGroup, 0.19, 0.225, 1.5, M.green2, [0, 0, -2.35], 20);
+  cylZ(gunGroup, 0.21, 0.21, 0.14, M.steel, [0, 0, -3.15], 20);
+  cylZ(gunGroup, 0.26, 0.23, 0.78, M.metal2, [0, 0, -3.58], 16);
+  // Muzzle brake: thick collar and two clearly visible side vents.
+  cylZ(gunGroup, 0.295, 0.27, 0.28, M.metal, [0, 0, -3.99], 16);
+  roundedBox(gunGroup, [0.63, 0.15, 0.34], M.metal, [0, 0, -4.03], [0, 0, 0], 0.035);
+  for (const side of [-1, 1]) {
+    box(gunGroup, [0.045, 0.12, 0.19], M.black, [side * 0.29, 0.01, -4.03]);
+  }
+  cylZ(gunGroup, 0.245, 0.26, 0.18, M.metal2, [0, 0, -4.22], 16);
+  cylZ(gunGroup, 0.17, 0.17, 0.035, M.black, [0, 0, -4.32], 16);
+
+  // Number on the turret front and both side faces.
+  const frontNumber = new THREE.Mesh(new THREE.PlaneGeometry(0.76, 0.26), numberMaterial);
+  frontNumber.position.set(0, 1.22, -1.34); frontNumber.rotation.y = Math.PI; turretGroup.add(frontNumber);
+  for (const side of [-1, 1]) {
+    const sideNo = new THREE.Mesh(new THREE.PlaneGeometry(0.74, 0.26), numberMaterial);
+    sideNo.position.set(side * 1.433, 0.85, 0.12);
+    sideNo.rotation.y = side * Math.PI / 2;
+    turretGroup.add(sideNo);
+  }
+
+  // Turret cupola, hatch, periscopes, handles and vision blocks.
+  cylinder(turretGroup, 0.42, 0.47, 0.3, M.green2, [-0.68, 1.39, 0.16], [0, 0, 0], 12);
+  cylinder(turretGroup, 0.37, 0.39, 0.09, M.khakiLight, [-0.68, 1.57, 0.16], [0, 0, 0], 12);
+  cylinder(turretGroup, 0.26, 0.26, 0.035, M.metal, [-0.68, 1.63, 0.16], [0, 0, 0], 12);
+  roundedBox(turretGroup, [0.72, 0.1, 0.52], M.green3, [0.72, 1.37, 0.22], [0, -0.12, 0], 0.04);
+  roundedBox(turretGroup, [0.48, 0.08, 0.38], M.green2, [0.72, 1.45, 0.22], [0, -0.12, 0], 0.025);
+  for (const side of [-1, 1]) {
+    roundedBox(turretGroup, [0.36, 0.12, 0.22], M.glass, [side * 0.87, 1.02, -1.12], [0, 0, 0], 0.025);
+    roundedBox(turretGroup, [0.24, 0.11, 0.09], M.metal, [side * 0.9, 1.16, -1.11], [0, 0, 0], 0.02);
+    // Small lifting eye on the turret roof.
+    const eye = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.035, 8, 14), M.metal2);
+    eye.position.set(side * 1.0, 1.34, 0.65); eye.rotation.x = Math.PI / 2; eye.castShadow = true; turretGroup.add(eye);
+  }
+  // Rear turret stowage box and hinge details.
+  roundedBox(turretGroup, [1.18, 0.42, 0.38], M.green2, [0, 0.58, 1.34], [0.06, 0, 0], 0.045);
+  for (let i = 0; i < 4; i++) box(turretGroup, [0.18, 0.28, 0.04], M.metal, [-0.42 + i * 0.28, 0.58, 1.55]);
+
+  // Surface details: bolts on turret sides, armour strips and small camo patches.
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 7; i++) {
+      cylinder(turretGroup, 0.035, 0.035, 0.035, M.steel, [side * 1.43, 0.48 + (i % 4) * 0.21, -0.55 + Math.floor(i / 4) * 0.92], [0, 0, Math.PI / 2], 8);
+    }
+  }
+  // A handful of low-profile camouflage panels add the worn olive / khaki colour breakup.
+  roundedBox(root, [0.82, 0.035, 1.12], M.khaki, [-1.0, 2.045, -1.7], [0, 0.1, 0], 0.015);
+  roundedBox(root, [0.7, 0.035, 0.8], M.green3, [1.0, 2.045, 0.9], [0, -0.18, 0], 0.015);
+  roundedBox(root, [0.86, 0.035, 0.7], M.khaki, [-0.95, 2.26, 2.45], [0, 0.08, 0], 0.015);
+  roundedBox(root, [0.7, 0.035, 0.86], M.green, [0.98, 2.26, 2.45], [0, -0.12, 0], 0.015);
+
+  // A few deck tools, grab handles and bolts keep the surfaces from looking blank.
+  for (let i = 0; i < 5; i++) {
+    roundedBox(root, [0.12, 0.08, 0.72], i % 2 ? M.green3 : M.khaki, [-1.53 + i * 0.17, 2.08, -2.25], [0, 0, -0.12], 0.025);
+  }
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 8; i++) {
+      cylinder(root, 0.032, 0.032, 0.04, M.steel, [side * 2.105, 1.22, -2.7 + i * 0.72], [0, 0, Math.PI / 2], 8);
+    }
+  }
+
+  // Flash sits at the actual muzzle and is activated during the firing animation.
+  const flashMat = new THREE.MeshBasicMaterial({ color: 0xffb52e, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const flash = new THREE.Mesh(new THREE.SphereGeometry(0.48, 10, 8), flashMat);
+  flash.position.set(0, 0, -4.53); flash.visible = false; flash.name = 'muzzleFlash'; gunGroup.add(flash);
+  const flashLight = new THREE.PointLight(0xffaa33, 0, 12);
+  flashLight.position.set(0, 0, -4.45); flashLight.name = 'muzzleLight'; gunGroup.add(flashLight);
+  const scopeAnchor = new THREE.Object3D(); scopeAnchor.position.set(0, 0, -3.85); gunGroup.add(scopeAnchor);
+
+  return { root, turretGroup, gunGroup, trackTex, trackGroups, exhaustPoints, scopeAnchor };
+}
+
+// Scene, ground and lighting.
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8d989d);
+scene.fog = new THREE.Fog(0x8d989d, 42, 145);
+const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 1000);
+const initialCamPos = new THREE.Vector3(11.5, 7.8, -12.4);
+camera.position.copy(initialCamPos);
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.055;
+controls.target.set(0, 1.7, 0); controls.maxPolarAngle = Math.PI / 2 + 0.08;
+controls.minDistance = 5; controls.maxDistance = 34;
+scene.add(new THREE.HemisphereLight(0xc4d1d6, 0x34372e, 1.35));
+scene.add(new THREE.AmbientLight(0xffffff, 0.34));
+const sun = new THREE.DirectionalLight(0xffe7c1, 2.65);
+sun.position.set(-14, 22, -12); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); sun.shadow.camera.left = -18; sun.shadow.camera.right = 18;
+sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18; sun.shadow.bias = -0.0005;
+scene.add(sun);
+const rim = new THREE.DirectionalLight(0x9ab5c0, 0.75); rim.position.set(10, 8, 14); scene.add(rim);
+
+// Procedural concrete floor with subtle seams, not a bright distracting grid.
+function makeGroundTexture() {
+  const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 512;
+  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#62655f'; ctx.fillRect(0, 0, 512, 512);
+  ctx.strokeStyle = 'rgba(25,27,25,0.22)'; ctx.lineWidth = 2;
+  for (let p = 0; p <= 512; p += 128) { ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, 512); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(512, p); ctx.stroke(); }
+  for (let i = 0; i < 1500; i++) { const x = Math.random() * 512, y = Math.random() * 512; ctx.fillStyle = Math.random() > 0.5 ? 'rgba(220,215,195,0.045)' : 'rgba(15,17,15,0.07)'; ctx.fillRect(x, y, 1.5, 1.5); }
+  const tex = new THREE.CanvasTexture(canvas); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(14, 14); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+}
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(220, 220), new THREE.MeshStandardMaterial({ map: makeGroundTexture(), roughness: 0.96, metalness: 0.02 }));
+floor.rotation.x = -Math.PI / 2; floor.position.y = -0.02; floor.receiveShadow = true; scene.add(floor);
+const grid = new THREE.GridHelper(220, 55, 0x424640, 0x525750); grid.position.y = -0.012;
+grid.material.transparent = true; grid.material.opacity = 0.11; scene.add(grid);
+
+const tankData = buildTank(); scene.add(tankData.root);
+let mode = 'viewer', animState = 'idle', isScoped = false;
+let speed = 0, targetSpeed = 0, rotationSpeed = 0;
+let targetTurretRot = 0, currentTurretRot = 0;
+let targetGunPitch = 0, currentGunPitch = 0, cameraPitch = 0.28;
+let isReloading = false, reloadTimer = 0;
+const RELOAD_TIME = 2.0;
+const keys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
+let recoil = 0, recoilVelocity = 0, flashTimer = 0;
+
+function setScope(on) {
+  isScoped = on;
+  $('scope-overlay').style.display = on ? 'block' : 'none';
+  $('ui-drive').style.display = on ? 'none' : 'block';
+  camera.fov = on ? 25 : 52; camera.updateProjectionMatrix();
+}
+window.addEventListener('keydown', (e) => {
+  if (Object.prototype.hasOwnProperty.call(keys, e.code)) keys[e.code] = true;
+  if (e.code === 'KeyX' && mode === 'drive') setScope(!isScoped);
+});
+window.addEventListener('keyup', (e) => { if (Object.prototype.hasOwnProperty.call(keys, e.code)) keys[e.code] = false; });
+document.addEventListener('mousemove', (e) => {
+  if (mode !== 'drive') return;
+  targetTurretRot -= e.movementX * 0.003;
+  if (isScoped) {
+    targetGunPitch = THREE.MathUtils.clamp(targetGunPitch - e.movementY * 0.002, -0.1, 0.35);
+  } else {
+    cameraPitch = THREE.MathUtils.clamp(cameraPitch + e.movementY * 0.002, -0.1, 0.6);
+  }
+});
+document.addEventListener('mousedown', (e) => { if (mode === 'drive' && e.button === 0 && !isReloading) shoot(); });
+
+function shoot() {
+  if (isReloading) return;
+  isReloading = true; reloadTimer = RELOAD_TIME; recoilVelocity = 3.6; flashTimer = 0.12;
+  const flash = tankData.gunGroup.getObjectByName('muzzleFlash');
+  const light = tankData.gunGroup.getObjectByName('muzzleLight');
+  if (flash) flash.visible = true; if (light) light.intensity = 28;
+  $('val-gun').innerText = 'ПЕРЕЗАРЯДКА'; $('val-gun').style.color = '#ff5b4f';
+  if (mode === 'viewer') animState = 'shooting';
+}
+$('btn-enter').addEventListener('click', () => {
+  mode = 'drive'; animState = 'idle'; $('ui-viewer').style.display = 'none'; $('ui-drive').style.display = 'block'; $('instructions').style.display = 'block';
+  controls.enabled = false; cameraPitch = 0.28; setScope(false);
+});
+$('btn-exit').addEventListener('click', () => {
+  mode = 'viewer'; setScope(false); $('ui-viewer').style.display = 'block'; $('ui-drive').style.display = 'none'; $('instructions').style.display = 'none';
+  controls.enabled = true; camera.fov = 52; camera.updateProjectionMatrix(); camera.position.copy(initialCamPos); controls.target.set(0, 1.7, 0); controls.update();
+  speed = targetSpeed = 0; tankData.root.position.set(0, 0, 0); tankData.root.rotation.set(0, 0, 0);
+});
+function setActiveButton(id) { document.querySelectorAll('#ui-viewer button').forEach(b => b.classList.remove('active')); $(id).classList.add('active'); }
+$('btn-anim-idle').addEventListener('click', () => { animState = 'idle'; setActiveButton('btn-anim-idle'); tankData.root.position.set(0, 0, 0); tankData.root.rotation.set(0, 0, 0); });
+$('btn-anim-move').addEventListener('click', () => { animState = 'moving'; setActiveButton('btn-anim-move'); });
+$('btn-anim-shoot').addEventListener('click', () => { setActiveButton('btn-anim-shoot'); shoot(); });
+
+const smokeParticles = [];
+const tmpVector = new THREE.Vector3();
+function spawnSmoke() {
+  const geo = new THREE.SphereGeometry(0.12 + Math.random() * 0.13, 6, 5);
+  const material = new THREE.MeshBasicMaterial({ color: 0x353733, transparent: true, opacity: 0.36, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, material);
+  const ep = tankData.exhaustPoints[Math.floor(Math.random() * tankData.exhaustPoints.length)];
+  ep.getWorldPosition(tmpVector); mesh.position.copy(tmpVector); mesh.scale.setScalar(0.8 + Math.random() * 0.8); scene.add(mesh);
+  smokeParticles.push({ mesh, life: 1.0, velocity: new THREE.Vector3((Math.random() - 0.5) * 0.18, 0.38 + Math.random() * 0.35, (Math.random() - 0.5) * 0.18) });
+}
+const clock = new THREE.Clock();
+let smokeTimer = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = Math.min(clock.getDelta(), 0.04);
+  smokeTimer += delta;
+  if ((animState === 'moving' || (mode === 'drive' && Math.abs(speed) > 2)) && smokeTimer > 0.38) { spawnSmoke(); smokeTimer = 0; }
+  for (let i = smokeParticles.length - 1; i >= 0; i--) {
+    const p = smokeParticles[i]; p.life -= delta * 0.46;
+    p.mesh.position.addScaledVector(p.velocity, delta); p.mesh.scale.addScalar(delta * 0.18);
+    p.mesh.material.opacity = Math.max(0, p.life * 0.32);
+    if (p.life <= 0) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); smokeParticles.splice(i, 1); }
+  }
+
+  if (mode === 'viewer') {
+    if (animState === 'moving') {
+      tankData.root.position.x = Math.sin(clock.elapsedTime * 0.38) * 7.5;
+      tankData.root.position.z = Math.cos(clock.elapsedTime * 0.38) * 5.2;
+      tankData.root.rotation.y = Math.sin(clock.elapsedTime * 0.38) * 0.24;
+      tankData.trackTex.offset.y -= delta * 1.8;
+    }
+    controls.update();
+  } else {
+    targetSpeed = keys.KeyW ? 15 : keys.KeyS ? -8 : 0;
+    speed = THREE.MathUtils.lerp(speed, targetSpeed, Math.min(1, delta * 2.1));
+    rotationSpeed = keys.KeyA ? 0.95 : keys.KeyD ? -0.95 : 0;
+    if (Math.abs(speed) > 0.06) {
+      const moveX = Math.sin(tankData.root.rotation.y) * speed * delta;
+      const moveZ = Math.cos(tankData.root.rotation.y) * speed * delta;
+      tankData.root.position.x -= moveX; tankData.root.position.z -= moveZ;
+      tankData.root.rotation.y += rotationSpeed * delta * (speed > 0 ? 1 : -1);
+      tankData.trackTex.offset.y -= speed * delta * 0.22;
+    }
+    currentTurretRot = THREE.MathUtils.lerp(currentTurretRot, targetTurretRot, Math.min(1, delta * 5));
+    tankData.turretGroup.rotation.y = currentTurretRot;
+    currentGunPitch = THREE.MathUtils.lerp(currentGunPitch, targetGunPitch, Math.min(1, delta * 5));
+    tankData.gunGroup.rotation.x = currentGunPitch;
+
+    if (isScoped) {
+      const worldPos = new THREE.Vector3(); tankData.scopeAnchor.getWorldPosition(worldPos); camera.position.copy(worldPos);
+      const lookTarget = new THREE.Vector3(0, 0, -100); tankData.gunGroup.localToWorld(lookTarget); camera.lookAt(lookTarget);
+    } else {
+      const totalYaw = tankData.root.rotation.y + currentTurretRot;
+      const offset = new THREE.Vector3(0, 5.5 + cameraPitch * 9, 12.5).applyAxisAngle(new THREE.Vector3(0, 1, 0), totalYaw);
+      const targetCamPos = tankData.root.position.clone().add(offset);
+      camera.position.lerp(targetCamPos, Math.min(1, delta * 5.5));
+      camera.lookAt(tankData.root.position.x, tankData.root.position.y + 2.2, tankData.root.position.z);
+    }
+    $('val-speed').innerText = Math.abs(Math.round(speed * 3));
+    $('val-turret').innerText = Math.round(currentTurretRot * 180 / Math.PI);
+    if (isReloading) {
+      reloadTimer -= delta; $('reload-fill').style.width = `${Math.max(0, reloadTimer / RELOAD_TIME * 100)}%`;
+      if (reloadTimer <= 0) { isReloading = false; $('val-gun').innerText = 'ГОТОВО'; $('val-gun').style.color = '#00ff00'; $('reload-fill').style.width = '100%'; }
+    }
+  }
+
+  // Short recoil impulse and muzzle flash fade.
+  if (recoilVelocity > 0.001) { recoil += recoilVelocity * delta; recoilVelocity *= Math.pow(0.035, delta); }
+  else recoil = THREE.MathUtils.damp(recoil, 0, 7, delta);
+  tankData.gunGroup.position.z = -1.45 + Math.min(0.46, recoil);
+  if (flashTimer > 0) {
+    flashTimer -= delta;
+    if (flashTimer <= 0) {
+      const flash = tankData.gunGroup.getObjectByName('muzzleFlash'); const light = tankData.gunGroup.getObjectByName('muzzleLight');
+      if (flash) flash.visible = false; if (light) light.intensity = 0;
+    }
+  }
+  renderer.render(scene, camera);
+}
+animate();
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+  </script>
+</body>
+</html>
