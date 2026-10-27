@@ -31,6 +31,7 @@ import {
 import { buildLevel, hasLevel } from './levels/index.js';
 import { AllyManager } from './allies.js';
 import { ParticleSystem } from './particles.js';
+import { AerialWar } from './aerial.js';
 
 class Game {
   constructor() {
@@ -41,6 +42,8 @@ class Game {
     // ?nofxaa, ?selftest, ?perftest, ?theme.
     const query = new URLSearchParams(window.location.search);
     this.debugEnabled = query.has('debug');
+    // Скрытый дебаг-режим, включается паролем в главном меню (Shift + `).
+    this.debugMode = false;
     this.skipSplash = query.has('skipSplash');
     this.autoPlay = query.has('play');
     this.noPost = query.has('nopost');
@@ -111,7 +114,15 @@ class Game {
 
     // Партиклы и союзники (Фазы 8–9).
     this.particles = new ParticleSystem(this.world.scene);
-    this.allies = new AllyManager({ scene: this.world.scene, enemies: this.enemies });
+    this.allies = new AllyManager({
+      scene: this.world.scene,
+      enemies: this.enemies,
+      colliders: this.colliders
+    });
+
+    // Фоновые воздушные бои высоко над полем боя (Валькирии/орочьи истребители).
+    // weapons передаём, чтобы истребители можно было сбить болтером/ПЗРК.
+    this.aerial = new AerialWar({ scene: this.world.scene, weapons: this.weapons });
 
     // Кровь при попадании и дым из ствола.
     this.weapons.onHit = (root, damage, source, point) => {
@@ -312,7 +323,9 @@ class Game {
       ammoValue: document.getElementById('ammo-value'),
       grenadeValue: document.getElementById('grenade-value'),
 
-      debug: document.getElementById('debug')
+      debug: document.getElementById('debug'),
+      debugPanel: document.getElementById('debug-panel'),
+      debugCoords: document.getElementById('debug-coords')
     };
   }
 
@@ -514,6 +527,7 @@ class Game {
           this.player.update(dt);
           this.weapons.update(dt);
           this.enemies.update(dt);
+          this.allies.update(dt);
           this.tutorialManager.update(dt);
         }
       },
@@ -1333,6 +1347,20 @@ class Game {
       button.addEventListener('click', () => this._handleAction(button.dataset.action));
     });
 
+    // Кнопки скрытого дебаг-режима: телепорт на уровень/финал.
+    document.querySelectorAll('[data-debug-level]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this._handleDebugLevel(button.dataset.debugLevel);
+      });
+    });
+
+    // Админ-действия (выдача ПЗРК и т.п.).
+    document.querySelectorAll('[data-debug-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this._handleDebugAction(button.dataset.debugAction);
+      });
+    });
+
     // Ползунки настроек: перетаскивание — тоже жест пользователя.
     this.dom.sensitivity.addEventListener('input', () => {
       const value = parseFloat(this.dom.sensitivity.value);
@@ -1416,6 +1444,188 @@ class Game {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Скрытый дебаг-режим
+  // -------------------------------------------------------------------------
+
+  _enableDebugMode() {
+    if (this.debugMode) {
+      this.dom.debugPanel?.classList.remove('hidden');
+      this.dom.debugCoords?.classList.remove('hidden');
+      this.dom.debug?.classList.remove('hidden');
+      return;
+    }
+
+    const password = window.prompt('Введите пароль дебаг-режима:');
+    if (password === null) return;
+
+    if (password !== 'admin2325') {
+      this._toast('Доступ запрещён.', 1800);
+      return;
+    }
+
+    this.debugMode = true;
+    this.dom.debugPanel?.classList.remove('hidden');
+    this.dom.debugCoords?.classList.remove('hidden');
+    this.dom.debug?.classList.remove('hidden');
+    this._toast('DEBUG MODE активирован. Y — свободный полёт.', 3500);
+    console.info('[Debug] Режим разработчика включён.');
+  }
+
+  _handleDebugLevel(level) {
+    if (!this.debugMode) return;
+
+    this.audio.init();
+    this.audio.playUiClick();
+    this.input.exitPointerLock();
+
+    if (level === 'finale') {
+      this.enterState('cutsceneFinale');
+      return;
+    }
+
+    if (!hasLevel(level)) {
+      this._toast(`Неизвестный уровень: ${level}`, 2500);
+      return;
+    }
+
+    this.enterState('playing', { fresh: true, level });
+  }
+
+  _handleDebugAction(action) {
+    if (!this.debugMode) return;
+
+    this.audio.init();
+    this.audio.playUiClick();
+
+    if (action === 'pzrk') {
+      const granted = this.weapons.grantLauncher();
+      if (granted) {
+        this._toast('ПЗРК выдан. Клавиша 4 — активировать, ПКМ — прицел.', 4000);
+      }
+      return;
+    }
+
+    if (action === 'spawn-ork') {
+      this._spawnAdminOrk();
+      return;
+    }
+
+    if (action === 'spawn-guard') {
+      this._spawnAdminGuard();
+    }
+  }
+
+  _canAdminSpawn() {
+    return (
+      this.stateName === 'playing' ||
+      this.stateName === 'tutorial' ||
+      this.stateName === 'paused'
+    );
+  }
+
+  // Точка впереди игрока (по горизонтали) для админ-спавна.
+  _getAdminSpawnPoint(distance = 6, lateral = 0) {
+    const forward = this.player.getLookDirection(new THREE.Vector3());
+    forward.y = 0;
+    if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
+    forward.normalize();
+
+    const rightX = forward.z;
+    const rightZ = -forward.x;
+
+    return {
+      x: this.player.position.x + forward.x * distance + rightX * lateral,
+      z: this.player.position.z + forward.z * distance + rightZ * lateral
+    };
+  }
+
+  _spawnAdminOrk() {
+    if (!this._canAdminSpawn()) {
+      this._toast('Спавн доступен только в игре.', 2000);
+      return;
+    }
+
+    const spot = this._getAdminSpawnPoint(6, (Math.random() - 0.5) * 3);
+    const enemy = this.enemies.spawn('boy', { x: spot.x, z: spot.z });
+
+    if (enemy) {
+      this.enemies.setActive(true);
+      this._toast('Орк заспавнен.', 1400);
+    } else {
+      this._toast('Лимит врагов достигнут.', 2000);
+    }
+  }
+
+  _spawnAdminGuard() {
+    if (!this._canAdminSpawn()) {
+      this._toast('Спавн доступен только в игре.', 2000);
+      return;
+    }
+
+    const spot = this._getAdminSpawnPoint(2.5, (Math.random() - 0.5) * 3);
+    const ally = this.allies.spawn({
+      x: spot.x,
+      z: spot.z,
+      rotation: this.player.yaw
+    });
+
+    if (ally) {
+      this.allies.setActive(true);
+      this.lighting.refreshMaterials(ally.model);
+      this._toast('Гвардеец прибыл. Колёсико — указать точку.', 2200);
+    }
+  }
+
+  // Приказ гвардейцам по точке под прицелом (средняя кнопка мыши).
+  _handleAdminCommands() {
+    if (!this.debugMode || !this.input.wasMousePressed(1)) return;
+    if (this.stateName !== 'playing' && this.stateName !== 'tutorial') return;
+    if (!this.allies || this.allies.allies.length === 0) return;
+
+    const point = this._getGroundPointFromCrosshair();
+    if (!point) return;
+
+    this.allies.commandMove(point);
+    this._toast('Гвардейцы: приказ на перемещение.', 1300);
+  }
+
+  _getGroundPointFromCrosshair() {
+    const origin = this.player.getEyePosition(new THREE.Vector3());
+    const direction = this.player.getLookDirection(new THREE.Vector3());
+
+    let x;
+    let z;
+
+    if (direction.y < -0.08) {
+      // Луч пересекает плоскость земли.
+      const t = origin.y / -direction.y;
+      x = origin.x + direction.x * t;
+      z = origin.z + direction.z * t;
+    } else {
+      // Смотрим вдаль/вверх — берём точку перед игроком.
+      const flat = new THREE.Vector3(direction.x, 0, direction.z);
+      if (flat.lengthSq() < 0.0001) flat.set(0, 0, -1);
+      flat.normalize();
+      x = this.player.position.x + flat.x * 12;
+      z = this.player.position.z + flat.z * 12;
+    }
+
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+
+    return {
+      x: Math.max(-90, Math.min(90, x)),
+      z: Math.max(-90, Math.min(90, z))
+    };
+  }
+
+  _toggleNoclip() {
+    if (!this.debugMode) return;
+    const enabled = !this.player.noclip;
+    this.player.setNoclip(enabled);
+    this._toast(enabled ? 'Noclip: свободный полёт включён.' : 'Noclip выключен.', 1600);
+  }
+
   _syncSettingsUi() {
     this.dom.sensitivity.value = String(this.settings.sensitivity);
     this.dom.sensitivityValue.textContent = this.settings.sensitivity.toFixed(2);
@@ -1435,10 +1645,24 @@ class Game {
       if (this.stateName === 'menu') this.audio.playAmbient();
     });
 
-    this.input.onKey((code) => {
+    this.input.onKey((code, event) => {
       // Пропуск заставки любой клавишей.
       if (this.stateName === 'splash') {
         this._finishSplash();
+      }
+
+      // Скрытый дебаг-режим: Shift + ` (Ё / Backquote) в главном меню.
+      if (code === 'Backquote' && event?.shiftKey) {
+        this._enableDebugMode();
+        return;
+      }
+
+      // Noclip в дебаг-режиме.
+      if (code === 'KeyY' && this.debugMode) {
+        if (this.stateName === 'playing' || this.stateName === 'tutorial') {
+          this._toggleNoclip();
+        }
+        return;
       }
 
       // Пробел в кат-сцене: досмотр реплики, затем закрытие, затем пропуск.
@@ -1943,8 +2167,10 @@ class Game {
     this.world.renderer.info.reset();
 
     this.state?.update?.(dt);
+    this._handleAdminCommands();
     this.dialogue.update(dt);
     this.particles.update(dt);
+    this.aerial.update(dt);
     this.world.update(dt);
 
     this.lighting.update();
@@ -1964,7 +2190,16 @@ class Game {
   }
 
   _updateDebug(dt) {
-    if (!this.debugEnabled) return;
+    // Координаты игрока в левом верхнем углу (дебаг-режим по паролю).
+    if (this.debugMode && this.dom.debugCoords) {
+      const position = this.player.position;
+      const displayY = this.player.noclip ? position.y : CONFIG.player.eyeHeight;
+      this.dom.debugCoords.textContent =
+        `X ${position.x.toFixed(1)} · Y ${displayY.toFixed(1)} · Z ${position.z.toFixed(1)}` +
+        (this.player.noclip ? ' · NOCLIP' : '');
+    }
+
+    if (!this.debugEnabled && !this.debugMode) return;
 
     this.debugAccum += dt;
     this.debugFrames += 1;

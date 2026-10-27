@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Orks - Warhammer 40k Procedural</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #1a1c1f; color: #ddd; font-family: monospace; }
+    #ui { position: absolute; top: 15px; left: 15px; background: rgba(20, 20, 20, 0.9); padding: 15px; border-radius: 5px; border: 1px solid #555; pointer-events: auto; width: 280px; transition: transform 0.3s; }
+    #ui.collapsed { transform: translateX(-310px); }
+    #ui-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+    #ui h1 { margin: 0; font-size: 16px; color: #8bb1c9; }
+    #btn-toggle { background: #444; color: #fff; border: none; cursor: pointer; padding: 2px 8px; border-radius: 3px; }
+    .stats { font-size: 11px; color: #aaa; margin-bottom: 4px; }
+    .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; }
+    button { background: #333; color: #fff; border: 1px solid #555; padding: 6px; cursor: pointer; font-family: monospace; font-size: 11px; transition: background 0.2s; }
+    button:hover { background: #444; }
+    button.active { background: #8bb1c9; color: #000; font-weight: bold; border-color: #8bb1c9; }
+    label { font-size: 12px; display: block; margin-top: 15px; margin-bottom: 5px; color: #aaa; }
+    input[type="range"] { width: 100%; }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; color: #8bb1c9; }
+    #instructions { position: absolute; bottom: 15px; left: 15px; font-size: 12px; color: #888; background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loading">Сборка WAAAAGH!...</div>
+  
+  <div id="ui" class="collapsed">
+    <div id="ui-header">
+      <h1>Ork Waaagh!</h1>
+      <button id="btn-toggle">[+]</button>
+    </div>
+    <div class="stats">Орк 1 (Choppa): <span id="t1">0</span> тр. / <span id="w1">0</span> тр.</div>
+    <div class="stats">Орк 2 (Shoota): <span id="t2">0</span> тр. / <span id="w2">0</span> тр.</div>
+    <div class="stats">Орк 3 (Blasta): <span id="t3">0</span> тр. / <span id="w3">0</span> тр.</div>
+    
+    <label for="exposure">Яркость: <span id="exp-val">1.2</span></label>
+    <input type="range" id="exposure" min="0.5" max="3.0" step="0.1" value="1.2">
+
+    <div class="btn-group">
+      <button id="anim-idle" class="active">Idle</button>
+      <button id="anim-walk">Walk</button>
+      <button id="anim-run">Run</button>
+      <button id="anim-action">Action</button>
+      <button id="anim-death" style="grid-column: span 2;">Death</button>
+    </div>
+  </div>
+
+  <div id="instructions">ЛКМ: Вращение | ПКМ: Панорама | Средняя кнопка мыши (колесико): Перемещение</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+    // ========================================================================
+    // UTILS
+    // ========================================================================
+    const cyl = (rt, rb, h, seg = 16, hs = 1, open = false) => new THREE.CylinderGeometry(rt, rb, h, seg, hs, open);
+    const sph = (r, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h);
+    const cone = (r, h, seg = 12) => new THREE.ConeGeometry(r, h, seg);
+    const torus = (r, t, rs = 8, ts = 16, arc = Math.PI * 2) => new THREE.TorusGeometry(r, t, rs, ts, arc);
+
+    function beveledBox(width, height, depth, bevel = 0.01, bevelSegments = 1) {
+      const b = Math.min(bevel, width * 0.2, height * 0.2, depth * 0.2);
+      const w = Math.max(0.001, width - b * 2);
+      const h = Math.max(0.001, height - b * 2);
+      const innerDepth = Math.max(0.001, depth - b * 2);
+      const shape = new THREE.Shape();
+      shape.moveTo(-w / 2, -h / 2); shape.lineTo(w / 2, -h / 2); shape.lineTo(w / 2, h / 2); shape.lineTo(-w / 2, h / 2); shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: innerDepth, bevelEnabled: true, bevelSize: b, bevelThickness: b, bevelSegments, curveSegments: 1, steps: 1 });
+      geometry.translate(0, 0, b - depth / 2);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function applyTransform(geometry, transform = {}) {
+      const position = transform.position || [0, 0, 0];
+      const rotation = transform.rotation || [0, 0, 0];
+      const scale = transform.scale || [1, 1, 1];
+      const matrix = new THREE.Matrix4();
+      const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2]));
+      matrix.compose(new THREE.Vector3(position[0], position[1], position[2]), quaternion, new THREE.Vector3(scale[0], scale[1], scale[2]));
+      geometry.applyMatrix4(matrix);
+      return geometry;
+    }
+
+    class VertexColorBuilder {
+      constructor(name = 'colored', materialParams = {}) {
+        this.name = name;
+        this.parts = [];
+        this.group = new THREE.Group();
+        this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.3, flatShading: true, ...materialParams });
+        this._color = new THREE.Color();
+      }
+      add(geometry, color, transform = {}) {
+        const prepared = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+        applyTransform(prepared, transform);
+        this._color.set(color);
+        const count = prepared.attributes.position.count;
+        const colors = new Float32Array(count * 3);
+        for (let i = 0; i < count; i += 1) {
+          colors[i * 3] = this._color.r; colors[i * 3 + 1] = this._color.g; colors[i * 3 + 2] = this._color.b;
+        }
+        prepared.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        this.parts.push(prepared);
+        return this;
+      }
+      build(options = {}) {
+        if (this.parts.length === 0) return this.group;
+        const merged = mergeGeometries(this.parts, false);
+        if (merged) {
+          const mesh = new THREE.Mesh(merged, this.material);
+          mesh.castShadow = options.castShadow !== false;
+          mesh.receiveShadow = options.receiveShadow !== false;
+          this.group.add(mesh);
+        }
+        this.parts = [];
+        return this.group;
+      }
+    }
+
+    // ========================================================================
+    // ПАЛИТРА
+    // ========================================================================
+    const C = {
+      skin: 0x5d7a3b, skinDark: 0x3d5226, skinLight: 0x7a9e4d,
+      armorRed: 0x9e2a24, armorRedDark: 0x6a1a16,
+      leather: 0x4a3525, leatherDark: 0x2b1e14,
+      metalDark: 0x1c1c1e, metalLight: 0x6b6b70,
+      rust: 0x6a3a28, brass: 0xa8853b,
+      bone: 0xd6cba4, eyeRed: 0xff1100, teeth: 0xe0d4b0,
+      mouthDark: 0x1a0a0a
+    };
+
+    // ========================================================================
+    // ОРУЖИЕ
+    // ========================================================================
+    function buildChoppa() {
+      const group = new THREE.Group();
+      const b = new VertexColorBuilder('choppa', { roughness: 0.5, metalness: 0.8 });
+      
+      // Рукоять (направлена вниз по -Y)
+      b.add(cyl(0.06, 0.07, 0.8, 12), C.leatherDark, { position: [0, -0.3, 0] });
+      for (let i = 0; i < 4; i++) b.add(torus(0.08, 0.02, 8, 12), C.leather, { position: [0, -0.1 - i * 0.15, 0], rotation: [Math.PI/2, 0, 0] });
+      
+      // Гарда и череп
+      b.add(beveledBox(0.5, 0.15, 0.2, 0.03), C.brass, { position: [0, 0.1, 0] });
+      b.add(sph(0.12, 12, 8), C.bone, { position: [0, 0.1, 0.15] });
+
+      // Лезвие (направлено вверх по +Y)
+      const bladeShape = new THREE.Shape();
+      bladeShape.moveTo(-0.1, 0); bladeShape.lineTo(0.1, 0); bladeShape.lineTo(0.3, 0.6); bladeShape.lineTo(0.5, 1.2);
+      bladeShape.lineTo(0.1, 1.0); bladeShape.lineTo(-0.15, 0.5); bladeShape.closePath();
+      const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.08, bevelEnabled: true, bevelSize: 0.03, bevelThickness: 0.03, bevelSegments: 1 });
+      bladeGeo.translate(0, 0.15, -0.04);
+      b.add(bladeGeo, C.armorRed, { rotation: [0, 0, 0.1] });
+      
+      // Зубья
+      for (let i = 0; i < 4; i++) {
+        b.add(cone(0.08, 0.25, 6), C.metalLight, { position: [-0.2, 0.3 + i*0.25, 0], rotation: [0, 0, Math.PI/2] });
+      }
+
+      group.add(b.build());
+      return group;
+    }
+
+    function buildShoota1() {
+      const group = new THREE.Group();
+      const b = new VertexColorBuilder('shoota1', { roughness: 0.6, metalness: 0.7 });
+      
+      // Ствол направлен вдоль -Z
+      b.add(beveledBox(0.3, 0.35, 1.0, 0.05), C.metalDark, { position: [0, 0, 0] });
+      b.add(beveledBox(0.25, 0.25, 0.6, 0.03), C.armorRed, { position: [0, 0.2, -0.1] });
+      b.add(cyl(0.08, 0.08, 1.5, 16), C.metalLight, { position: [0, 0.05, -1.2], rotation: [Math.PI/2, 0, 0] });
+      b.add(cyl(0.12, 0.12, 0.8, 16), C.metalDark, { position: [0, 0.05, -0.9], rotation: [Math.PI/2, 0, 0] });
+      b.add(cyl(0.2, 0.2, 0.4, 16), C.metalDark, { position: [0, 0.05, -2.0], rotation: [Math.PI/2, 0, 0] });
+      b.add(cyl(0.35, 0.35, 0.25, 16), C.rust, { position: [0, -0.4, 0.1], rotation: [Math.PI/2, 0, 0] });
+      b.add(beveledBox(0.1, 0.3, 0.12, 0.02), C.leather, { position: [0, -0.3, 0.4], rotation: [0.3, 0, 0] });
+      b.add(beveledBox(0.15, 0.25, 0.4, 0.02), C.metalDark, { position: [0, 0, 0.6] });
+
+      const flashMat = new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+      const flash = new THREE.Mesh(cone(0.3, 0.8, 8), flashMat);
+      flash.rotation.x = -Math.PI/2; 
+      flash.position.set(0, 0.05, -2.4);
+      flash.visible = false;
+      flash.name = 'muzzleFlash';
+      group.add(flash);
+
+      const light = new THREE.PointLight(0xffaa00, 0, 6);
+      light.position.set(0, 0.05, -2.2);
+      light.name = 'muzzleLight';
+      group.add(light);
+
+      group.add(b.build());
+      return group;
+    }
+
+    function buildShoota2() {
+      const group = new THREE.Group();
+      const b = new VertexColorBuilder('shoota2', { roughness: 0.5, metalness: 0.8 });
+      
+      b.add(beveledBox(0.4, 0.45, 1.4, 0.05), C.metalDark, { position: [0, 0, 0] });
+      for (let i = 0; i < 4; i++) {
+        b.add(beveledBox(0.42, 0.15, 0.2, 0.02), C.armorRed, { position: [0, 0, -0.4 + i*0.25] });
+        b.add(beveledBox(0.42, 0.05, 0.1, 0.01), C.metalDark, { position: [0, 0, -0.3 + i*0.25] });
+      }
+      b.add(cyl(0.3, 0.35, 1.0, 16), C.metalDark, { position: [0, 0, -1.2], rotation: [Math.PI/2, 0, 0] });
+      b.add(cyl(0.2, 0.2, 0.4, 16), C.metalLight, { position: [0, 0, -1.6], rotation: [Math.PI/2, 0, 0] });
+      b.add(beveledBox(0.2, 0.5, 0.3, 0.03), C.metalDark, { position: [0, -0.4, 0.3], rotation: [0.3, 0, 0] });
+      b.add(beveledBox(0.1, 0.25, 0.15, 0.02), C.leather, { position: [0, -0.3, 0.4] });
+
+      const flashMat = new THREE.MeshBasicMaterial({ color: 0xff3300, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+      const flash = new THREE.Mesh(cone(0.4, 1.0, 8), flashMat);
+      flash.rotation.x = -Math.PI/2;
+      flash.position.set(0, 0, -2.0);
+      flash.visible = false;
+      flash.name = 'muzzleFlash';
+      group.add(flash);
+
+      const light = new THREE.PointLight(0xff3300, 0, 8);
+      light.position.set(0, 0, -1.8);
+      light.name = 'muzzleLight';
+      group.add(light);
+
+      group.add(b.build());
+      return group;
+    }
+
+    // ========================================================================
+    // СБОРКА ОРКА
+    // ========================================================================
+    function buildOrk(type) {
+      const root = new THREE.Group();
+      
+      // --- СКЕЛЕТ ---
+      const hips = new THREE.Group();
+      hips.position.y = 1.2;
+      root.add(hips);
+
+      const spine = new THREE.Group();
+      spine.position.y = 0.2;
+      spine.rotation.x = 0.15;
+      hips.add(spine);
+
+      const chest = new THREE.Group();
+      chest.position.y = 0.4;
+      chest.rotation.x = 0.25;
+      spine.add(chest);
+
+      const neck = new THREE.Group();
+      neck.position.set(0, 0.6, 0.15); // Сдвинули шею вперед
+      neck.rotation.x = -0.4;
+      chest.add(neck);
+
+      const head = new THREE.Group();
+      head.position.set(0, 0.35, 0.1);
+      neck.add(head);
+
+      // Руки
+      const armL = new THREE.Group(); armL.position.set(-0.95, 0.4, 0); chest.add(armL);
+      const forearmL = new THREE.Group(); forearmL.position.set(0, -0.55, 0); armL.add(forearmL);
+      const handL = new THREE.Group(); handL.position.set(0, -0.55, 0); forearmL.add(handL);
+
+      const armR = new THREE.Group(); armR.position.set(0.95, 0.4, 0); chest.add(armR);
+      const forearmR = new THREE.Group(); forearmR.position.set(0, -0.55, 0); armR.add(forearmR);
+      const handR = new THREE.Group(); handR.position.set(0, -0.55, 0); forearmR.add(handR);
+
+      // Ноги
+      const legL = new THREE.Group(); legL.position.set(-0.45, 0, 0); hips.add(legL);
+      const calfL = new THREE.Group(); calfL.position.set(0, -0.55, 0); legL.add(calfL);
+      const footL = new THREE.Group(); footL.position.set(0, -0.55, 0); calfL.add(footL);
+
+      const legR = new THREE.Group(); legR.position.set(0.45, 0, 0); hips.add(legR);
+      const calfR = new THREE.Group(); calfR.position.set(0, -0.55, 0); legR.add(calfR);
+      const footR = new THREE.Group(); footR.position.set(0, -0.55, 0); calfR.add(footR);
+
+      // --- МЕШИ ---
+      
+      // 1. Таз
+      const bHips = new VertexColorBuilder();
+      bHips.add(sph(0.5, 16, 12), C.leather, { scale: [1, 0.8, 0.9] });
+      bHips.add(beveledBox(0.9, 0.2, 0.8, 0.05), C.leatherDark);
+      hips.add(bHips.build());
+
+      // 2. Торс
+      const bTorso = new VertexColorBuilder();
+      bTorso.add(sph(0.55, 16, 12), C.skin, { position: [0, 0.3, 0], scale: [1.1, 0.8, 0.9] });
+      bTorso.add(sph(0.5, 16, 12), C.skinDark, { position: [0, 0.0, 0], scale: [1.0, 0.8, 0.8] });
+      bTorso.add(beveledBox(1.2, 0.8, 1.0, 0.1), C.leather, { position: [0, 0.2, 0] });
+      bTorso.add(beveledBox(0.2, 0.8, 0.1, 0.02), C.brass, { position: [0, 0.2, 0.55] });
+      
+      for (const side of [-1, 1]) {
+        bTorso.add(sph(0.4, 16, 12), C.armorRed, { position: [side * 0.95, 0.5, 0], scale: [1.2, 1, 1.2] });
+        bTorso.add(cone(0.08, 0.3, 6), C.metalLight, { position: [side * 0.95, 0.8, 0], rotation: [0, 0, side * 0.2] });
+      }
+      chest.add(bTorso.build());
+
+      // 3. ГОЛОВА
+      const bHead = new VertexColorBuilder();
+      
+      bHead.add(sph(0.4, 16, 12), C.skin, { scale: [1, 0.85, 1.1] });
+      bHead.add(beveledBox(0.65, 0.15, 0.3, 0.05), C.skinDark, { position: [0, 0.1, 0.25], rotation: [-0.2, 0, 0] });
+      bHead.add(beveledBox(0.15, 0.1, 0.15, 0.02), C.skinDark, { position: [0, -0.05, 0.4] });
+      bHead.add(beveledBox(0.4, 0.15, 0.3, 0.05), C.skin, { position: [0, -0.15, 0.3] });
+      bHead.add(beveledBox(0.45, 0.2, 0.45, 0.05), C.skinDark, { position: [0, -0.3, 0.35], rotation: [0.1, 0, 0] });
+      bHead.add(beveledBox(0.3, 0.1, 0.2, 0.01), C.mouthDark, { position: [0, -0.22, 0.4] });
+
+      for (const side of [-1, 1]) {
+        bHead.add(cone(0.08, 0.3, 6), C.teeth, { position: [side * 0.15, -0.2, 0.45], rotation: [0.2, 0, side * 0.1] });
+        for (let i = 0; i < 2; i++) {
+          bHead.add(cone(0.03, 0.1, 5), C.teeth, { position: [side * (0.05 + i*0.05), -0.22, 0.45], rotation: [0.2, 0, 0] });
+        }
+        bHead.add(cone(0.06, 0.25, 6), C.skin, { position: [side * 0.35, 0.0, 0], rotation: [0, 0, side * 1.2] }); 
+      }
+
+      if (type === 'melee') {
+        bHead.add(beveledBox(0.5, 0.25, 0.3, 0.05), C.metalDark, { position: [0, -0.32, 0.4] });
+        bHead.add(cone(0.05, 0.15, 6), C.metalLight, { position: [-0.15, -0.35, 0.5], rotation: [Math.PI/2, 0, 0] });
+        bHead.add(cone(0.05, 0.15, 6), C.metalLight, { position: [0.15, -0.35, 0.5], rotation: [Math.PI/2, 0, 0] });
+        
+        bHead.add(sph(0.45, 16, 12, 0, Math.PI*2, 0, Math.PI/1.8), C.metalDark, { position: [0, 0.15, 0] });
+        bHead.add(cone(0.08, 0.35, 8), C.metalLight, { position: [0, 0.6, 0] });
+        
+      } else if (type === 'shoota') {
+        bHead.add(beveledBox(0.6, 0.15, 0.2, 0.02), C.leather, { position: [0, 0.15, 0.3] });
+        for (const side of [-1, 1]) {
+          bHead.add(cyl(0.12, 0.12, 0.1, 12), C.metalDark, { position: [side * 0.15, 0.1, 0.4], rotation: [Math.PI/2, 0, 0] }); 
+        }
+        
+      } else if (type === 'blasta') {
+        bHead.add(sph(0.48, 16, 12, 0, Math.PI*2, 0, Math.PI/1.6), C.metalDark, { position: [0, 0.15, 0] });
+        bHead.add(torus(0.45, 0.05, 6, 16), C.metalLight, { position: [0, 0.15, 0], rotation: [Math.PI/2, 0, 0] });
+        
+        const bionicEye = new THREE.Mesh(cyl(0.08, 0.08, 0.15, 8), new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
+        bionicEye.rotation.x = Math.PI/2;
+        bionicEye.position.set(-0.15, 0.05, 0.35);
+        head.add(bionicEye);
+        
+        const eyeR = new THREE.Mesh(sph(0.04, 6, 6), new THREE.MeshBasicMaterial({ color: C.eyeRed })); 
+        eyeR.position.set(0.15, 0.05, 0.35); 
+        head.add(eyeR);
+      }
+
+      if (type !== 'blasta') {
+        const eyeMat = new THREE.MeshBasicMaterial({ color: C.eyeRed });
+        const eyeL = new THREE.Mesh(sph(0.04, 6, 6), eyeMat); eyeL.position.set(-0.15, 0.05, 0.35); head.add(eyeL);
+        const eyeR = new THREE.Mesh(sph(0.04, 6, 6), eyeMat); eyeR.position.set(0.15, 0.05, 0.35); head.add(eyeR);
+      }
+
+      head.add(bHead.build());
+
+      // 4. Руки
+      const buildArmSegment = (bicepGroup, forearmGroup, handGroup) => {
+        const bBicep = new VertexColorBuilder();
+        bBicep.add(cyl(0.25, 0.2, 0.55, 12), C.skin);
+        bBicep.add(sph(0.2, 12, 8), C.skinDark, { position: [0, -0.25, 0] });
+        bicepGroup.add(bBicep.build());
+
+        const bForearm = new VertexColorBuilder();
+        bForearm.add(cyl(0.2, 0.15, 0.55, 12), C.skin, { position: [0, -0.25, 0] });
+        bForearm.add(cyl(0.22, 0.22, 0.3, 12), C.metalDark, { position: [0, -0.25, 0] });
+        forearmGroup.add(bForearm.build());
+
+        const bHand = new VertexColorBuilder();
+        bHand.add(beveledBox(0.25, 0.25, 0.25, 0.05), C.skinLight);
+        bHand.add(beveledBox(0.15, 0.15, 0.2, 0.02), C.skin, { position: [0, 0, 0.15] });
+        handGroup.add(bHand.build());
+      };
+
+      buildArmSegment(armL, forearmL, handL);
+      buildArmSegment(armR, forearmR, handR);
+
+      // 5. Ноги
+      const buildLegSegment = (thighGroup, calfGroup, footGroup) => {
+        const bThigh = new VertexColorBuilder();
+        bThigh.add(cyl(0.3, 0.25, 0.55, 12), C.leather);
+        bThigh.add(sph(0.25, 12, 8), C.skinDark, { position: [0, -0.25, 0] });
+        bThigh.add(beveledBox(0.3, 0.3, 0.15, 0.02), C.armorRed, { position: [0, -0.25, 0.15] });
+        thighGroup.add(bThigh.build());
+
+        const bCalf = new VertexColorBuilder();
+        bCalf.add(cyl(0.22, 0.25, 0.45, 12), C.leatherDark, { position: [0, -0.2, 0] });
+        calfGroup.add(bCalf.build());
+
+        const bFoot = new VertexColorBuilder();
+        bFoot.add(beveledBox(0.35, 0.2, 0.5, 0.05), C.metalDark, { position: [0, -0.1, 0.1] });
+        bFoot.add(beveledBox(0.4, 0.1, 0.2, 0.02), C.metalLight, { position: [0, -0.1, 0.3] });
+        footGroup.add(bFoot.build());
+      };
+
+      buildLegSegment(legL, calfL, footL);
+      buildLegSegment(legR, calfR, footR);
+
+      // --- ОРУЖИЕ ---
+      let weapon = null;
+      if (type === 'melee') {
+        weapon = buildChoppa();
+        // ФИКС: Разворачиваем топор на 180 градусов, чтобы лезвие смотрело вперед при ударе
+        weapon.rotation.set(Math.PI, 0, 0);
+        // Смещаем, чтобы рука держала рукоять, а не гарду
+        weapon.position.set(0, -0.2, 0.1); 
+        handR.add(weapon);
+      } else if (type === 'shoota') {
+        weapon = buildShoota1();
+        weapon.position.set(0, -0.2, 0.1);
+        weapon.rotation.set(-Math.PI/2, 0, 0); 
+        handR.add(weapon);
+      } else if (type === 'blasta') {
+        weapon = buildShoota2();
+        weapon.position.set(0, -0.2, 0.1);
+        weapon.rotation.set(-Math.PI/2, 0, 0);
+        handR.add(weapon);
+      }
+
+      // Статистика
+      let orkTris = 0, wepTris = 0;
+      root.traverse(c => { if (c.isMesh) orkTris += c.geometry.index ? c.geometry.index.count/3 : c.geometry.attributes.position.count/3; });
+      if (weapon) weapon.traverse(c => { if (c.isMesh) wepTris += c.geometry.index ? c.geometry.index.count/3 : c.geometry.attributes.position.count/3; });
+      
+      root.userData = {
+        type, hips, spine, chest, neck, head, armL, forearmL, handL, armR, forearmR, handR, legL, calfL, footL, legR, calfR, footR, weapon,
+        orkTris: Math.round(orkTris - wepTris),
+        wepTris: Math.round(wepTris)
+      };
+
+      return root;
+    }
+
+    // ========================================================================
+    // СЦЕНА
+    // ========================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1c1f);
+    scene.fog = new THREE.Fog(0x1a1c1f, 15, 45);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 3, 8);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.target.set(0, 1.2, 0);
+    controls.maxPolarAngle = Math.PI / 2 + 0.1;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.DOLLY
+    };
+
+    // Свет
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const hemiLight = new THREE.HemisphereLight(0x8bb1c9, 0x2a2a2a, 1.0);
+    scene.add(hemiLight);
+    
+    const dirLight = new THREE.DirectionalLight(0xfff0dd, 2.0);
+    dirLight.position.set(5, 10, 8);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
+    dirLight.shadow.camera.left = -10; dirLight.shadow.camera.right = 10;
+    dirLight.shadow.camera.top = 10; dirLight.shadow.camera.bottom = -10;
+    dirLight.shadow.bias = -0.001;
+    scene.add(dirLight);
+
+    // Пол
+    const gridHelper = new THREE.GridHelper(50, 50, 0x333333, 0x111111);
+    scene.add(gridHelper);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.9 }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.position.y = -0.01;
+    scene.add(floor);
+
+    // ========================================================================
+    // ЗАГРУЗКА И UI
+    // ========================================================================
+    let orks = [];
+    let animationState = 'idle';
+    let animTime = 0;
+
+    setTimeout(() => {
+      const ork1 = buildOrk('melee');
+      ork1.position.set(-2.5, 0, 0);
+      ork1.rotation.y = 0.3;
+
+      const ork2 = buildOrk('shoota');
+      ork2.position.set(0, 0, 0);
+      ork2.rotation.y = 0;
+
+      const ork3 = buildOrk('blasta');
+      ork3.position.set(2.5, 0, 0);
+      ork3.rotation.y = -0.3;
+
+      orks = [ork1, ork2, ork3];
+      orks.forEach(o => scene.add(o));
+
+      document.getElementById('t1').innerText = ork1.userData.orkTris.toLocaleString();
+      document.getElementById('w1').innerText = ork1.userData.wepTris.toLocaleString();
+      document.getElementById('t2').innerText = ork2.userData.orkTris.toLocaleString();
+      document.getElementById('w2').innerText = ork2.userData.wepTris.toLocaleString();
+      document.getElementById('t3').innerText = ork3.userData.orkTris.toLocaleString();
+      document.getElementById('w3').innerText = ork3.userData.wepTris.toLocaleString();
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('ui').classList.remove('collapsed');
+      document.getElementById('btn-toggle').innerText = '[-]';
+    }, 100);
+
+    // UI Логика
+    document.getElementById('btn-toggle').addEventListener('click', (e) => {
+      const ui = document.getElementById('ui');
+      ui.classList.toggle('collapsed');
+      e.target.innerText = ui.classList.contains('collapsed') ? '[+]' : '[-]';
+    });
+
+    document.getElementById('exposure').addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      renderer.toneMappingExposure = val;
+      document.getElementById('exp-val').innerText = val.toFixed(1);
+    });
+
+    function setAnimationState(state) {
+      animationState = state;
+      animTime = 0;
+      document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+      const btn = document.getElementById(`anim-${state === 'action' ? 'action' : state}`);
+      if (btn) btn.classList.add('active');
+      
+      if (state !== 'death') {
+        orks.forEach(o => {
+          o.rotation.x = 0;
+          o.position.y = 0;
+        });
+      }
+    }
+
+    ['idle', 'walk', 'run', 'action', 'death'].forEach(st => {
+      document.getElementById(`anim-${st}`).addEventListener('click', () => setAnimationState(st));
+    });
+
+    // ========================================================================
+    // СИСТЕМА АНИМАЦИЙ
+    // ========================================================================
+    const clock = new THREE.Clock();
+
+    function updateOrkAnimation(ork, delta) {
+      const { spine, chest, neck, head, armL, forearmL, armR, forearmR, legL, calfL, legR, calfR, type, weapon } = ork.userData;
+      
+      let tSpineX = 0.15, tChestX = 0.25;
+      let tArmLX = 0, tArmRX = 0, tForearmLX = 0, tForearmRX = 0;
+      let tLegLX = 0, tLegRX = 0, tCalfLX = 0, tCalfRX = 0;
+      let tHipsY = 1.2;
+
+      if (type !== 'melee') {
+        tArmLX = -0.8; tForearmLX = -0.8;
+        tArmRX = -0.8; tForearmRX = -0.8;
+      }
+
+      if (animationState === 'idle') {
+        const breathe = Math.sin(animTime * 2) * 0.05;
+        tChestX += breathe;
+        tArmLX += breathe; tArmRX -= breathe;
+        
+      } else if (animationState === 'walk') {
+        const speed = 5;
+        const swing = Math.sin(animTime * speed) * 0.5;
+        tLegLX = swing; tLegRX = -swing;
+        tCalfLX = Math.max(0, -swing * 1.5); tCalfRX = Math.max(0, swing * 1.5);
+        tArmLX += -swing * 0.5; tArmRX += swing * 0.5;
+        tHipsY += Math.abs(Math.sin(animTime * speed)) * 0.05;
+
+      } else if (animationState === 'run') {
+        const speed = 8;
+        const swing = Math.sin(animTime * speed) * 0.8;
+        tLegLX = swing; tLegRX = -swing;
+        tCalfLX = Math.max(0, -swing * 2); tCalfRX = Math.max(0, swing * 2);
+        tArmLX += -swing * 0.8; tArmRX += swing * 0.8;
+        tChestX = 0.5;
+        tHipsY += Math.abs(Math.sin(animTime * speed)) * 0.1;
+
+      } else if (animationState === 'action') {
+        if (type === 'melee') {
+          const swingPhase = Math.sin(animTime * 10);
+          tArmRX = -1.5 + swingPhase * 1.2; 
+          tForearmRX = -0.5 + swingPhase * 0.5;
+          tChestX = 0.25 - swingPhase * 0.1;
+        } else {
+          const aimTime = 0.3;
+          if (animTime < aimTime) {
+            const p = animTime / aimTime;
+            tArmRX = THREE.MathUtils.lerp(-0.8, -1.6, p);
+            tForearmRX = THREE.MathUtils.lerp(-0.8, -0.2, p);
+            tArmLX = THREE.MathUtils.lerp(-0.8, -1.4, p);
+            tForearmLX = THREE.MathUtils.lerp(-0.8, -0.4, p);
+            tChestX = THREE.MathUtils.lerp(0.25, 0.1, p);
+          } else {
+            const recoil = Math.sin((animTime - aimTime) * 40) * 0.1;
+            tArmRX = -1.6 + recoil;
+            tForearmRX = -0.2 + recoil;
+            tArmLX = -1.4 + recoil;
+            tForearmLX = -0.4 + recoil;
+            tChestX = 0.1 + recoil * 0.5;
+          }
+        }
+
+      } else if (animationState === 'death') {
+        const fallAmount = Math.min(1, animTime * 3);
+        ork.rotation.x = THREE.MathUtils.lerp(0, Math.PI / 2, fallAmount);
+        ork.position.y = THREE.MathUtils.lerp(0, 0.2, fallAmount);
+        
+        tChestX = 0.25 - fallAmount * 0.5;
+        tArmLX = -fallAmount * 2; tArmRX = fallAmount * 2;
+        tLegLX = -fallAmount * 0.5; tLegRX = fallAmount * 0.5;
+      }
+
+      const lerpSpeed = 15 * delta;
+      
+      spine.rotation.x = THREE.MathUtils.lerp(spine.rotation.x, tSpineX, lerpSpeed);
+      chest.rotation.x = THREE.MathUtils.lerp(chest.rotation.x, tChestX, lerpSpeed);
+      
+      armL.rotation.x = THREE.MathUtils.lerp(armL.rotation.x, tArmLX, lerpSpeed);
+      forearmL.rotation.x = THREE.MathUtils.lerp(forearmL.rotation.x, tForearmLX, lerpSpeed);
+      
+      armR.rotation.x = THREE.MathUtils.lerp(armR.rotation.x, tArmRX, lerpSpeed);
+      forearmR.rotation.x = THREE.MathUtils.lerp(forearmR.rotation.x, tForearmRX, lerpSpeed);
+      
+      legL.rotation.x = THREE.MathUtils.lerp(legL.rotation.x, tLegLX, lerpSpeed);
+      calfL.rotation.x = THREE.MathUtils.lerp(calfL.rotation.x, tCalfLX, lerpSpeed);
+      
+      legR.rotation.x = THREE.MathUtils.lerp(legR.rotation.x, tLegRX, lerpSpeed);
+      calfR.rotation.x = THREE.MathUtils.lerp(calfR.rotation.x, tCalfRX, lerpSpeed);
+      
+      ork.userData.hips.position.y = THREE.MathUtils.lerp(ork.userData.hips.position.y, tHipsY, lerpSpeed);
+
+      if (animationState === 'action' && type !== 'melee' && animTime > 0.3) {
+        if (weapon) {
+          const flash = weapon.getObjectByName('muzzleFlash');
+          const light = weapon.getObjectByName('muzzleLight');
+          const isFiring = Math.sin(animTime * 50) > 0;
+          if (flash) flash.visible = isFiring;
+          if (light) light.intensity = isFiring ? 20 : 0;
+        }
+      } else {
+        if (weapon) {
+          const flash = weapon.getObjectByName('muzzleFlash');
+          const light = weapon.getObjectByName('muzzleLight');
+          if (flash) flash.visible = false;
+          if (light) light.intensity = 0;
+        }
+      }
+
+      if (animationState !== 'death' || animTime < 1.5) {
+        animTime += delta;
+      }
+    }
+
+    // ========================================================================
+    // ЦИКЛ
+    // ========================================================================
+    function animate() {
+      requestAnimationFrame(animate);
+      
+      const delta = clock.getDelta();
+      
+      orks.forEach(ork => updateOrkAnimation(ork, delta));
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

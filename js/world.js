@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CONFIG, LEVEL_THEMES, makeRng } from './config.js';
+import { SkyDome } from './sky.js';
 
 export class World {
   constructor(canvas) {
@@ -24,6 +25,7 @@ export class World {
     this._initScene();
     this._initEnvironment();
     this._initLights();
+    this._initSky();
     this.applyTheme('menu');
     this._buildBackdrop();
     this._initDust();
@@ -104,6 +106,11 @@ export class World {
     this.scene.add(this.ambient);
   }
 
+  // Процедурный купол неба с тучами, дымом и тусклым солнцем.
+  _initSky() {
+    this.sky = new SkyDome({ scene: this.scene });
+  }
+
   // -------------------------------------------------------------------------
   // Тема уровня
   // -------------------------------------------------------------------------
@@ -114,6 +121,7 @@ export class World {
 
     this.scene.background = new THREE.Color(theme.background);
     this.scene.fog = new THREE.FogExp2(theme.fog.color, theme.fog.density);
+    this.sky?.setTheme(theme);
 
     this.sun.color.setHex(theme.sun.color);
     this.sun.intensity = theme.sun.intensity;
@@ -315,6 +323,8 @@ export class World {
 
   update(dt) {
     this.elapsed += dt;
+
+    this.sky?.update(dt, this.camera);
 
     // Мерцание костров: синус + шум.
     for (const light of this.pointLights) {

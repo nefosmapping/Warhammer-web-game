@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Imperial Guard - Warhammer 40k Procedural</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #1a1c1f; color: #ddd; font-family: monospace; }
+    #ui { position: absolute; top: 15px; left: 15px; background: rgba(20, 20, 20, 0.9); padding: 15px; border-radius: 5px; border: 1px solid #555; pointer-events: auto; width: 280px; transition: transform 0.3s; }
+    #ui.collapsed { transform: translateX(-310px); }
+    #ui-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+    #ui h1 { margin: 0; font-size: 16px; color: #8bb1c9; }
+    #btn-toggle { background: #444; color: #fff; border: none; cursor: pointer; padding: 2px 8px; border-radius: 3px; }
+    .stats { font-size: 11px; color: #aaa; margin-bottom: 4px; }
+    .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; }
+    button { background: #333; color: #fff; border: 1px solid #555; padding: 6px; cursor: pointer; font-family: monospace; font-size: 11px; transition: background 0.2s; }
+    button:hover { background: #444; }
+    button.active { background: #8bb1c9; color: #000; font-weight: bold; border-color: #8bb1c9; }
+    .btn-full { grid-column: span 2; background: #4a5a3a; border-color: #6a7a5a; }
+    .btn-full.active { background: #7a9e4d; }
+    label { font-size: 12px; display: block; margin-top: 15px; margin-bottom: 5px; color: #aaa; }
+    input[type="range"] { width: 100%; }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; color: #8bb1c9; }
+    #instructions { position: absolute; bottom: 15px; left: 15px; font-size: 12px; color: #888; background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loading">Сборка Имперской Гвардии...</div>
+  
+  <div id="ui" class="collapsed">
+    <div id="ui-header">
+      <h1>Imperial Guard</h1>
+      <button id="btn-toggle">[+]</button>
+    </div>
+    <div class="stats">Гвардеец: <span id="t1">0</span> тр.</div>
+    <div class="stats">Лазган: <span id="w1">0</span> тр.</div>
+    
+    <label for="exposure">Яркость: <span id="exp-val">1.2</span></label>
+    <input type="range" id="exposure" min="0.5" max="3.0" step="0.1" value="1.2">
+
+    <div class="btn-group">
+      <button id="anim-idle" class="active">Idle</button>
+      <button id="anim-walk">Walk</button>
+      <button id="anim-run">Run</button>
+      <button id="anim-action">Action</button>
+      <button id="anim-death" class="btn-full">Death</button>
+      <button id="btn-view-weapon" class="btn-full">Осмотреть Лазган</button>
+    </div>
+  </div>
+
+  <div id="instructions">ЛКМ: Вращение | ПКМ: Панорама | Средняя кнопка мыши (колесико): Перемещение</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+    // ========================================================================
+    // UTILS
+    // ========================================================================
+    const cyl = (rt, rb, h, seg = 16, hs = 1, open = false) => new THREE.CylinderGeometry(rt, rb, h, seg, hs, open);
+    const sph = (r, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h);
+    const cone = (r, h, seg = 12) => new THREE.ConeGeometry(r, h, seg);
+    const torus = (r, t, rs = 8, ts = 16, arc = Math.PI * 2) => new THREE.TorusGeometry(r, t, rs, ts, arc);
+
+    function beveledBox(width, height, depth, bevel = 0.01, bevelSegments = 1) {
+      const b = Math.min(bevel, width * 0.2, height * 0.2, depth * 0.2);
+      const w = Math.max(0.001, width - b * 2);
+      const h = Math.max(0.001, height - b * 2);
+      const innerDepth = Math.max(0.001, depth - b * 2);
+      const shape = new THREE.Shape();
+      shape.moveTo(-w / 2, -h / 2); shape.lineTo(w / 2, -h / 2); shape.lineTo(w / 2, h / 2); shape.lineTo(-w / 2, h / 2); shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: innerDepth, bevelEnabled: true, bevelSize: b, bevelThickness: b, bevelSegments, curveSegments: 1, steps: 1 });
+      geometry.translate(0, 0, b - depth / 2);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function applyTransform(geometry, transform = {}) {
+      const position = transform.position || [0, 0, 0];
+      const rotation = transform.rotation || [0, 0, 0];
+      const scale = transform.scale || [1, 1, 1];
+      const matrix = new THREE.Matrix4();
+      const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2]));
+      matrix.compose(new THREE.Vector3(position[0], position[1], position[2]), quaternion, new THREE.Vector3(scale[0], scale[1], scale[2]));
+      geometry.applyMatrix4(matrix);
+      return geometry;
+    }
+
+    class VertexColorBuilder {
+      constructor(name = 'colored', materialParams = {}) {
+        this.name = name;
+        this.parts = [];
+        this.group = new THREE.Group();
+        this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.3, flatShading: true, ...materialParams });
+        this._color = new THREE.Color();
+      }
+      add(geometry, color, transform = {}) {
+        const prepared = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+        applyTransform(prepared, transform);
+        this._color.set(color);
+        const count = prepared.attributes.position.count;
+        const colors = new Float32Array(count * 3);
+        for (let i = 0; i < count; i += 1) {
+          colors[i * 3] = this._color.r; colors[i * 3 + 1] = this._color.g; colors[i * 3 + 2] = this._color.b;
+        }
+        prepared.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        this.parts.push(prepared);
+        return this;
+      }
+      build(options = {}) {
+        if (this.parts.length === 0) return this.group;
+        const merged = mergeGeometries(this.parts, false);
+        if (merged) {
+          const mesh = new THREE.Mesh(merged, this.material);
+          mesh.castShadow = options.castShadow !== false;
+          mesh.receiveShadow = options.receiveShadow !== false;
+          this.group.add(mesh);
+        }
+        this.parts = [];
+        return this.group;
+      }
+    }
+
+    // ========================================================================
+    // ПАЛИТРА
+    // ========================================================================
+    const C = {
+      armorGreen: 0x4a5a3a, armorGreenDark: 0x354228,
+      pantsKhaki: 0x8a7d5c, pantsKhakiDark: 0x6b5f42,
+      leather: 0x1c1c1c, leatherDark: 0x111111,
+      skin: 0xc99e7a, metalDark: 0x2a2a2e,
+      metalLight: 0x6b6b70, gunGreen: 0x5a7a4a,
+      silver: 0xcccccc, eyeRed: 0xff1100
+    };
+
+    // ========================================================================
+    // ЛАЗГАН (Ствол направлен в +Z)
+    // ========================================================================
+    function buildLasgun() {
+      const group = new THREE.Group();
+      const b = new VertexColorBuilder('lasgun', { roughness: 0.5, metalness: 0.7 });
+
+      // Ресивер
+      b.add(beveledBox(0.12, 0.16, 0.5, 0.02), C.gunGreen, { position: [0, 0.05, 0] });
+      b.add(beveledBox(0.13, 0.02, 0.5, 0.005), C.silver, { position: [0, 0.14, 0] });
+      b.add(beveledBox(0.13, 0.02, 0.5, 0.005), C.silver, { position: [0, -0.04, 0] });
+
+      // Ствол
+      b.add(cyl(0.025, 0.025, 0.7, 12), C.metalDark, { position: [0, 0.08, 0.6], rotation: [Math.PI/2, 0, 0] });
+      b.add(beveledBox(0.06, 0.06, 0.4, 0.01), C.gunGreen, { position: [0, 0.08, 0.45] });
+      for (let i = 0; i < 3; i++) b.add(torus(0.04, 0.01, 6, 12), C.metalLight, { position: [0, 0.08, 0.35 + i*0.1], rotation: [Math.PI/2, 0, 0] });
+      b.add(cyl(0.04, 0.04, 0.1, 12), C.metalLight, { position: [0, 0.08, 0.95], rotation: [Math.PI/2, 0, 0] });
+
+      // Приклад
+      b.add(beveledBox(0.08, 0.12, 0.3, 0.02), C.metalDark, { position: [0, 0.05, -0.4] });
+      b.add(beveledBox(0.1, 0.16, 0.1, 0.02), C.metalDark, { position: [0, 0.02, -0.6] });
+
+      // Магазин
+      b.add(beveledBox(0.08, 0.2, 0.12, 0.02), C.metalDark, { position: [0, -0.15, 0.1], rotation: [0.2, 0, 0] });
+      b.add(beveledBox(0.06, 0.04, 0.1, 0.01), C.silver, { position: [0, -0.25, 0.08], rotation: [0.2, 0, 0] });
+
+      // Рукоять
+      b.add(beveledBox(0.06, 0.18, 0.1, 0.02), C.leather, { position: [0, -0.12, -0.12], rotation: [-0.3, 0, 0] });
+      b.add(torus(0.04, 0.01, 6, 12), C.metalDark, { position: [0, -0.08, -0.04], rotation: [0, Math.PI/2, 0] });
+      b.add(beveledBox(0.01, 0.04, 0.01, 0.002), C.metalLight, { position: [0, -0.08, -0.04] });
+
+      // Прицел
+      b.add(beveledBox(0.03, 0.05, 0.06, 0.01), C.metalDark, { position: [0, 0.16, -0.05] });
+      b.add(beveledBox(0.015, 0.03, 0.015, 0.005), C.metalLight, { position: [0, 0.19, -0.05] });
+      b.add(beveledBox(0.025, 0.04, 0.02, 0.005), C.metalLight, { position: [0, 0.14, 0.7] });
+
+      // Аквила
+      b.add(beveledBox(0.12, 0.04, 0.04, 0.01), C.silver, { position: [0, 0.08, 0.1] });
+      for (const side of [-1, 1]) {
+        b.add(beveledBox(0.1, 0.015, 0.015, 0.005), C.silver, { position: [side * 0.06, 0.1, 0.1], rotation: [0, 0, side * 0.2] });
+        b.add(beveledBox(0.08, 0.015, 0.015, 0.005), C.silver, { position: [side * 0.05, 0.07, 0.1], rotation: [0, 0, side * 0.1] });
+        b.add(beveledBox(0.05, 0.015, 0.015, 0.005), C.silver, { position: [side * 0.03, 0.05, 0.1] });
+      }
+
+      // Вспышка
+      const flashMat = new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+      const flash = new THREE.Mesh(cone(0.12, 0.4, 8), flashMat);
+      flash.rotation.x = Math.PI/2;
+      flash.position.set(0, 0.08, 1.1);
+      flash.visible = false;
+      flash.name = 'muzzleFlash';
+      group.add(flash);
+
+      const light = new THREE.PointLight(0x88ccff, 0, 5);
+      light.position.set(0, 0.08, 1.0);
+      light.name = 'muzzleLight';
+      group.add(light);
+
+      group.add(b.build());
+      return group;
+    }
+
+    // ========================================================================
+    // ИМПЕРСКИЙ ГВАРДЕЕЦ
+    // ========================================================================
+    function buildGuardsman() {
+      const root = new THREE.Group();
+      
+      // Скелет
+      const hips = new THREE.Group(); hips.position.y = 1.1; root.add(hips);
+      const spine = new THREE.Group(); spine.position.y = 0.1; hips.add(spine);
+      const chest = new THREE.Group(); chest.position.y = 0.25; spine.add(chest);
+      const neck = new THREE.Group(); neck.position.set(0, 0.3, 0); chest.add(neck);
+      const head = new THREE.Group(); head.position.set(0, 0.15, 0); neck.add(head);
+
+      const armL = new THREE.Group(); armL.position.set(-0.25, 0.25, 0); chest.add(armL);
+      const forearmL = new THREE.Group(); forearmL.position.set(0, -0.4, 0); armL.add(forearmL);
+      const handL = new THREE.Group(); handL.position.set(0, -0.4, 0); forearmL.add(handL);
+
+      const armR = new THREE.Group(); armR.position.set(0.25, 0.25, 0); chest.add(armR);
+      const forearmR = new THREE.Group(); forearmR.position.set(0, -0.4, 0); armR.add(forearmR);
+      const handR = new THREE.Group(); handR.position.set(0, -0.4, 0); forearmR.add(handR);
+
+      const legL = new THREE.Group(); legL.position.set(-0.15, 0, 0); hips.add(legL);
+      const calfL = new THREE.Group(); calfL.position.set(0, -0.5, 0); legL.add(calfL);
+      const footL = new THREE.Group(); footL.position.set(0, -0.5, 0); calfL.add(footL);
+
+      const legR = new THREE.Group(); legR.position.set(0.15, 0, 0); hips.add(legR);
+      const calfR = new THREE.Group(); calfR.position.set(0, -0.5, 0); legR.add(calfR);
+      const footR = new THREE.Group(); footR.position.set(0, -0.5, 0); calfR.add(footR);
+
+      // Меши
+      const bHips = new VertexColorBuilder();
+      bHips.add(beveledBox(0.35, 0.25, 0.25, 0.05), C.pantsKhaki);
+      bHips.add(beveledBox(0.37, 0.08, 0.27, 0.02), C.leather);
+      bHips.add(beveledBox(0.08, 0.1, 0.05, 0.01), C.metalLight, { position: [0, 0, 0.15] });
+      hips.add(bHips.build());
+
+      const bTorso = new VertexColorBuilder();
+      bTorso.add(beveledBox(0.45, 0.5, 0.3, 0.05), C.pantsKhaki, { position: [0, 0.05, 0] }); 
+      bTorso.add(beveledBox(0.5, 0.35, 0.35, 0.05), C.armorGreen, { position: [0, 0.1, 0] });
+      for (const side of [-1, 1]) {
+        bTorso.add(sph(0.18, 12, 10), C.armorGreen, { position: [side * 0.28, 0.25, 0], scale: [1.2, 0.8, 1.2] });
+      }
+      chest.add(bTorso.build());
+
+      const bNeck = new VertexColorBuilder();
+      bNeck.add(cyl(0.08, 0.1, 0.2, 12), C.skin, { position: [0, 0.1, 0] });
+      neck.add(bNeck.build());
+
+      const bHead = new VertexColorBuilder();
+      bHead.add(sph(0.15, 16, 12), C.skin, { scale: [1, 1.1, 1] });
+      bHead.add(sph(0.18, 16, 12, 0, Math.PI*2, 0, Math.PI/1.8), C.armorGreen, { position: [0, 0.05, 0] });
+      bHead.add(beveledBox(0.25, 0.04, 0.3, 0.02), C.armorGreenDark, { position: [0, 0.02, 0.05] }); 
+      bHead.add(beveledBox(0.16, 0.12, 0.12, 0.03), C.metalDark, { position: [0, -0.08, 0.1] }); 
+      bHead.add(cyl(0.04, 0.04, 0.08, 8), C.metalLight, { position: [0, -0.12, 0.16], rotation: [Math.PI/2, 0, 0] }); 
+      
+      bHead.add(beveledBox(0.16, 0.05, 0.05, 0.01), C.metalDark, { position: [0, 0.02, 0.13] }); 
+      const eyeMat = new THREE.MeshBasicMaterial({ color: C.eyeRed });
+      const eyeL = new THREE.Mesh(sph(0.02, 8, 8), eyeMat); eyeL.position.set(-0.05, 0.02, 0.15); head.add(eyeL);
+      const eyeR = new THREE.Mesh(sph(0.02, 8, 8), eyeMat); eyeR.position.set(0.05, 0.02, 0.15); head.add(eyeR);
+      head.add(bHead.build());
+
+      const buildArmSegment = (bicepGroup, forearmGroup, handGroup) => {
+        const bBicep = new VertexColorBuilder();
+        bBicep.add(sph(0.1, 12, 10), C.pantsKhaki, { position: [0, 0, 0] });
+        bBicep.add(cyl(0.1, 0.08, 0.4, 12), C.pantsKhaki, { position: [0, -0.2, 0] });
+        bicepGroup.add(bBicep.build());
+
+        const bForearm = new VertexColorBuilder();
+        bForearm.add(sph(0.08, 12, 10), C.pantsKhaki, { position: [0, 0, 0] });
+        bForearm.add(cyl(0.08, 0.07, 0.4, 12), C.pantsKhaki, { position: [0, -0.2, 0] });
+        bForearm.add(cyl(0.085, 0.085, 0.08, 12), C.leather, { position: [0, -0.35, 0] });
+        forearmGroup.add(bForearm.build());
+
+        const bHand = new VertexColorBuilder();
+        bHand.add(beveledBox(0.08, 0.1, 0.08, 0.02), C.skin, { position: [0, -0.05, 0] });
+        handGroup.add(bHand.build());
+      };
+      buildArmSegment(armL, forearmL, handL);
+      buildArmSegment(armR, forearmR, handR);
+
+      const buildLegSegment = (thighGroup, calfGroup, footGroup) => {
+        const bThigh = new VertexColorBuilder();
+        bThigh.add(sph(0.12, 12, 10), C.pantsKhaki, { position: [0, 0, 0] });
+        bThigh.add(cyl(0.12, 0.1, 0.5, 12), C.pantsKhaki, { position: [0, -0.25, 0] });
+        thighGroup.add(bThigh.build());
+
+        const bCalf = new VertexColorBuilder();
+        bCalf.add(sph(0.1, 12, 10), C.pantsKhaki, { position: [0, 0, 0] });
+        bCalf.add(cyl(0.1, 0.08, 0.5, 12), C.pantsKhaki, { position: [0, -0.25, 0] });
+        calfGroup.add(bCalf.build());
+
+        const bFoot = new VertexColorBuilder();
+        bFoot.add(beveledBox(0.14, 0.2, 0.25, 0.03), C.leather, { position: [0, -0.1, 0.05] });
+        footGroup.add(bFoot.build());
+      };
+      buildLegSegment(legL, calfL, footL);
+      buildLegSegment(legR, calfR, footR);
+
+      // Оружие
+      const weapon = buildLasgun();
+      // ФИКС: Правильные оси без боковых перекосов
+      weapon.position.set(0, 0.1, -0.05);
+      weapon.rotation.set(Math.PI/2, 0, 0); 
+      handR.add(weapon);
+
+      // Считаем треугольники
+      let gTris = 0, wTris = 0;
+      root.traverse(c => { if (c.isMesh) gTris += c.geometry.index ? c.geometry.index.count/3 : c.geometry.attributes.position.count/3; });
+      if (weapon) weapon.traverse(c => { if (c.isMesh) wTris += c.geometry.index ? c.geometry.index.count/3 : c.geometry.attributes.position.count/3; });
+      
+      root.userData = {
+        hips, spine, chest, neck, head, armL, forearmL, armR, forearmR, legL, calfL, legR, calfR, weapon,
+        gTris: Math.round(gTris - wTris),
+        wTris: Math.round(wTris)
+      };
+
+      return root;
+    }
+
+    // ========================================================================
+    // СЦЕНА
+    // ========================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1c1f);
+    scene.fog = new THREE.Fog(0x1a1c1f, 15, 45);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const defaultCamPos = new THREE.Vector3(0, 2.0, 4.5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.target.set(0, 1.2, 0);
+    controls.maxPolarAngle = Math.PI / 2 + 0.1;
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.DOLLY };
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const hemiLight = new THREE.HemisphereLight(0x8bb1c9, 0x2a2a2a, 1.0);
+    scene.add(hemiLight);
+    
+    const dirLight = new THREE.DirectionalLight(0xfff0dd, 2.5);
+    dirLight.position.set(5, 10, 8);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
+    dirLight.shadow.camera.left = -10; dirLight.shadow.camera.right = 10;
+    dirLight.shadow.camera.top = 10; dirLight.shadow.camera.bottom = -10;
+    scene.add(dirLight);
+
+    const gridHelper = new THREE.GridHelper(50, 50, 0x333333, 0x111111);
+    scene.add(gridHelper);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.9 }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.position.y = -0.01;
+    scene.add(floor);
+
+    // ========================================================================
+    // ЗАГРУЗКА И UI
+    // ========================================================================
+    let guardsman, standaloneWeapon, droppedWeapon;
+    let animationState = 'idle';
+    let animTime = 0;
+    let isViewingWeapon = false;
+
+    setTimeout(() => {
+      guardsman = buildGuardsman();
+      scene.add(guardsman);
+
+      standaloneWeapon = buildLasgun();
+      standaloneWeapon.position.set(0, 1.2, 0);
+      standaloneWeapon.rotation.set(0, Math.PI / 4, 0);
+      standaloneWeapon.visible = false;
+      scene.add(standaloneWeapon);
+
+      // Оружие на земле для анимации смерти
+      droppedWeapon = buildLasgun();
+      droppedWeapon.position.set(1.5, 0.1, 0.5);
+      droppedWeapon.rotation.set(Math.PI/2, Math.PI/3, 0);
+      droppedWeapon.visible = false;
+      scene.add(droppedWeapon);
+
+      document.getElementById('t1').innerText = guardsman.userData.gTris.toLocaleString();
+      document.getElementById('w1').innerText = guardsman.userData.wTris.toLocaleString();
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('ui').classList.remove('collapsed');
+      document.getElementById('btn-toggle').innerText = '[-]';
+      
+      camera.position.copy(defaultCamPos);
+      controls.update();
+    }, 100);
+
+    document.getElementById('btn-toggle').addEventListener('click', (e) => {
+      const ui = document.getElementById('ui');
+      ui.classList.toggle('collapsed');
+      e.target.innerText = ui.classList.contains('collapsed') ? '[+]' : '[-]';
+    });
+
+    document.getElementById('exposure').addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      renderer.toneMappingExposure = val;
+      document.getElementById('exp-val').innerText = val.toFixed(1);
+    });
+
+    function setAnimationState(state) {
+      if (isViewingWeapon) return;
+      animationState = state;
+      animTime = 0;
+      document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+      const btn = document.getElementById(`anim-${state === 'action' ? 'action' : state}`);
+      if (btn) btn.classList.add('active');
+      
+      if (state !== 'death') {
+        guardsman.rotation.x = 0;
+        guardsman.position.y = 0;
+        guardsman.position.z = 0;
+        guardsman.userData.weapon.visible = true;
+        droppedWeapon.visible = false;
+        guardsman.userData.weapon.position.set(0, 0.1, -0.05);
+        guardsman.userData.weapon.rotation.set(Math.PI/2, 0, 0);
+      }
+    }
+
+    ['idle', 'walk', 'run', 'action', 'death'].forEach(st => {
+      document.getElementById(`anim-${st}`).addEventListener('click', () => setAnimationState(st));
+    });
+
+    const btnViewWeapon = document.getElementById('btn-view-weapon');
+    btnViewWeapon.addEventListener('click', () => {
+      isViewingWeapon = !isViewingWeapon;
+      if (isViewingWeapon) {
+        btnViewWeapon.innerText = 'Вернуться к Гвардейцу';
+        btnViewWeapon.classList.add('active');
+        guardsman.visible = false;
+        standaloneWeapon.visible = true;
+        camera.position.set(0, 1.5, 2.5);
+        controls.target.set(0, 1.2, 0);
+        document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+      } else {
+        btnViewWeapon.innerText = 'Осмотреть Лазган';
+        btnViewWeapon.classList.remove('active');
+        guardsman.visible = true;
+        standaloneWeapon.visible = false;
+        camera.position.copy(defaultCamPos);
+        controls.target.set(0, 1.2, 0);
+        document.getElementById('anim-idle').classList.add('active');
+        animationState = 'idle';
+      }
+      controls.update();
+    });
+
+    // ========================================================================
+    // АНИМАЦИЯ
+    // ========================================================================
+    const clock = new THREE.Clock();
+
+    function updateGuardsmanAnimation(g, delta) {
+      if (isViewingWeapon) return;
+
+      const { spine, chest, neck, head, armL, forearmL, armR, forearmR, legL, calfL, legR, calfR, weapon } = g.userData;
+      
+      let tSpineX = 0, tChestX = 0, tHeadX = 0;
+      
+      // Базовые позы (оружие смотрит вперед)
+      let tArmLX = -1.2, tForearmLX = -0.8, tArmLY = 0.3, tArmLZ = 0.2;
+      let tArmRX = -1.2, tForearmRX = -0.3;
+      let tLegLX = 0, tLegRX = 0, tCalfLX = 0, tCalfRX = 0;
+      let tHipsY = 1.1;
+
+      if (animationState === 'idle') {
+        const breathe = Math.sin(animTime * 2) * 0.03;
+        tChestX += breathe;
+        tArmLX += breathe; tArmRX -= breathe;
+        
+      } else if (animationState === 'walk') {
+        const speed = 6;
+        const swing = Math.sin(animTime * speed) * 0.5;
+        tLegLX = swing; tLegRX = -swing;
+        tCalfLX = Math.max(0, -swing * 1.5); tCalfRX = Math.max(0, swing * 1.5);
+        tHipsY += Math.abs(Math.sin(animTime * speed)) * 0.05;
+        tArmRX += Math.sin(animTime * speed) * 0.05;
+
+      } else if (animationState === 'run') {
+        const speed = 10;
+        const swing = Math.sin(animTime * speed) * 0.8;
+        tLegLX = swing; tLegRX = -swing;
+        tCalfLX = Math.max(0, -swing * 2); tCalfRX = Math.max(0, swing * 2);
+        tChestX = 0.3;
+        tHeadX = -0.2;
+        tHipsY += Math.abs(Math.sin(animTime * speed)) * 0.1;
+        
+        // Оружие у груди
+        tArmRX = -1.5; tForearmRX = -1.0;
+        tArmLX = -1.5; tForearmLX = -1.0; tArmLY = 0.4; tArmLZ = 0.2;
+
+      } else if (animationState === 'action') {
+        // Стрельба (Прицеливание)
+        const aimTime = 0.3;
+        if (animTime < aimTime) {
+          const p = animTime / aimTime;
+          tArmRX = THREE.MathUtils.lerp(-1.2, -1.5, p);
+          tForearmRX = THREE.MathUtils.lerp(-0.3, -0.1, p);
+          tArmLX = THREE.MathUtils.lerp(-1.2, -1.6, p);
+          tForearmLX = THREE.MathUtils.lerp(-0.8, -0.4, p);
+          tArmLY = THREE.MathUtils.lerp(0.3, 0.5, p); 
+          tArmLZ = THREE.MathUtils.lerp(0.2, 0.3, p); 
+          tChestX = THREE.MathUtils.lerp(0, -0.1, p);
+        } else {
+          // Отдача
+          const recoil = Math.sin((animTime - aimTime) * 30) * 0.08;
+          tArmRX = -1.5 + recoil;
+          tForearmRX = -0.1 + recoil;
+          tArmLX = -1.6 + recoil;
+          tForearmLX = -0.4 + recoil;
+          tArmLY = 0.5;
+          tArmLZ = 0.3;
+          tChestX = -0.1 + recoil * 0.5;
+        }
+
+      } else if (animationState === 'death') {
+        const fallAmount = Math.min(1, animTime * 3);
+        g.rotation.x = THREE.MathUtils.lerp(0, Math.PI / 2, fallAmount);
+        g.position.y = THREE.MathUtils.lerp(0, 0.4, fallAmount);
+        g.position.z = THREE.MathUtils.lerp(0, -0.8, fallAmount);
+        
+        tChestX = -fallAmount * 0.5;
+        tArmLX = -fallAmount * 2; tArmRX = fallAmount * 2;
+        tLegLX = -fallAmount * 0.5; tLegRX = fallAmount * 0.5;
+        
+        if (weapon && fallAmount > 0.2) {
+          weapon.visible = false;
+          droppedWeapon.visible = true;
+        }
+      }
+
+      const lerpSpeed = 15 * delta;
+      
+      spine.rotation.x = THREE.MathUtils.lerp(spine.rotation.x, tSpineX, lerpSpeed);
+      chest.rotation.x = THREE.MathUtils.lerp(chest.rotation.x, tChestX, lerpSpeed);
+      
+      armL.rotation.x = THREE.MathUtils.lerp(armL.rotation.x, tArmLX, lerpSpeed);
+      forearmL.rotation.x = THREE.MathUtils.lerp(forearmL.rotation.x, tForearmLX, lerpSpeed);
+      armL.rotation.y = THREE.MathUtils.lerp(armL.rotation.y, tArmLY, lerpSpeed);
+      armL.rotation.z = THREE.MathUtils.lerp(armL.rotation.z, tArmLZ, lerpSpeed);
+      
+      armR.rotation.x = THREE.MathUtils.lerp(armR.rotation.x, tArmRX, lerpSpeed);
+      forearmR.rotation.x = THREE.MathUtils.lerp(forearmR.rotation.x, tForearmRX, lerpSpeed);
+      
+      legL.rotation.x = THREE.MathUtils.lerp(legL.rotation.x, tLegLX, lerpSpeed);
+      calfL.rotation.x = THREE.MathUtils.lerp(calfL.rotation.x, tCalfLX, lerpSpeed);
+      
+      legR.rotation.x = THREE.MathUtils.lerp(legR.rotation.x, tLegRX, lerpSpeed);
+      calfR.rotation.x = THREE.MathUtils.lerp(calfR.rotation.x, tCalfRX, lerpSpeed);
+      
+      g.userData.hips.position.y = THREE.MathUtils.lerp(g.userData.hips.position.y, tHipsY, lerpSpeed);
+
+      if (animationState === 'action' && animTime > 0.3) {
+        if (weapon) {
+          const flash = weapon.getObjectByName('muzzleFlash');
+          const light = weapon.getObjectByName('muzzleLight');
+          const isFiring = Math.sin(animTime * 40) > 0;
+          if (flash) flash.visible = isFiring;
+          if (light) light.intensity = isFiring ? 10 : 0;
+        }
+      } else {
+        if (weapon) {
+          const flash = weapon.getObjectByName('muzzleFlash');
+          const light = weapon.getObjectByName('muzzleLight');
+          if (flash) flash.visible = false;
+          if (light) light.intensity = 0;
+        }
+      }
+
+      if (animationState !== 'death' || animTime < 1.5) {
+        animTime += delta;
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (guardsman) updateGuardsmanAnimation(guardsman, delta);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

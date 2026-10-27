@@ -26,6 +26,9 @@ export class Player {
     this.dead = false;
     this.active = false;
 
+    // Дебаг-режим: свободный полёт без гравитации и коллизий.
+    this.noclip = false;
+
     this.walkPhase = 0;
     this.bob = 0;
     this.bobSide = 0;
@@ -44,7 +47,9 @@ export class Player {
   }
 
   reset(spawn = { x: 0, z: 6, yaw: 0 }) {
-    this.position.set(spawn.x ?? 0, 0, spawn.z ?? 6);
+    // В noclip высота камеры хранится в position.y, иначе — 0 (ноги на земле).
+    const startY = this.noclip ? CONFIG.player.eyeHeight : 0;
+    this.position.set(spawn.x ?? 0, startY, spawn.z ?? 6);
     this.velocity.set(0, 0, 0);
     this.yaw = spawn.yaw ?? 0;
     this.pitch = 0;
@@ -57,7 +62,11 @@ export class Player {
     this.shakeTime = 0;
 
     this.active = true;
-    this.camera.position.set(this.position.x, CONFIG.player.eyeHeight, this.position.z);
+    this.camera.position.set(
+      this.position.x,
+      this.noclip ? this.position.y : CONFIG.player.eyeHeight,
+      this.position.z
+    );
     this.camera.rotation.set(0, this.yaw, 0);
     this._updateHud();
   }
@@ -66,6 +75,19 @@ export class Player {
     this.active = active;
     if (!active) {
       this.velocity.set(0, 0, 0);
+    }
+  }
+
+  setNoclip(enabled) {
+    this.noclip = Boolean(enabled);
+    if (this.noclip) {
+      this.velocity.set(0, 0, 0);
+      this.bob = 0;
+      this.bobSide = 0;
+      // Продолжаем с текущей высоты камеры, а не проваливаемся на землю.
+      this.position.y = Math.max(CONFIG.player.eyeHeight, this.camera.position.y);
+    } else {
+      this.position.y = 0;
     }
   }
 
@@ -81,8 +103,41 @@ export class Player {
     if (!this.active || this.dead) return;
 
     this._updateLook(dt);
+
+    if (this.noclip) {
+      this._updateNoclip(dt);
+      return;
+    }
+
     this._updateMovement(dt);
     this._updateCamera(dt);
+  }
+
+  // Свободный полёт: WASD — вперёд/назад/в стороны относительно взгляда,
+  // Space — вверх, Ctrl — вниз. Коллизии и «прилипание» к земле отключены.
+  _updateNoclip(dt) {
+    const forwardInput = (this.input.isDown('KeyW') ? 1 : 0) - (this.input.isDown('KeyS') ? 1 : 0);
+    const strafeInput = (this.input.isDown('KeyD') ? 1 : 0) - (this.input.isDown('KeyA') ? 1 : 0);
+    const upInput =
+      (this.input.isDown('Space') ? 1 : 0) -
+      (this.input.isDown('ControlLeft') || this.input.isDown('ControlRight') ? 1 : 0);
+    const running = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
+    const speed = running ? 24 : 12;
+
+    // Направление взгляда с учётом тангажа — полёт «куда смотришь».
+    const forward = this.camera.getWorldDirection(this._tmpForward);
+    forward.normalize();
+
+    const right = this._tmpRight.crossVectors(forward, this.camera.up).normalize();
+    if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
+
+    this.position.addScaledVector(forward, forwardInput * speed * dt);
+    this.position.addScaledVector(right, strafeInput * speed * dt);
+    this.position.y += upInput * speed * dt;
+    this.position.y = clamp(this.position.y, -25, 160);
+
+    this.camera.position.copy(this.position);
+    this.camera.rotation.set(this.pitch + this.recoilPitch, this.yaw, 0);
   }
 
   _updateLook(dt) {

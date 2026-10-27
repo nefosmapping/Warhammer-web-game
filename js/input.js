@@ -4,10 +4,11 @@
 
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD',
-  'KeyR', 'KeyG', 'KeyE', 'KeyQ',
-  'Digit1', 'Digit2', 'Digit3',
+  'KeyR', 'KeyG', 'KeyE', 'KeyQ', 'KeyY',
+  'Digit1', 'Digit2', 'Digit3', 'Digit4',
   'ShiftLeft', 'ShiftRight',
-  'Space', 'Escape', 'Tab'
+  'ControlLeft', 'ControlRight',
+  'Space', 'Escape', 'Tab', 'Backquote'
 ]);
 
 export class Input {
@@ -68,14 +69,18 @@ export class Input {
     window.addEventListener('mousedown', (event) => {
       this._fireFirstInteraction();
       if (!this.enabled) return;
-      if (event.button !== 0 && event.button !== 2) return;
+      // 0 — ЛКМ, 1 — средняя кнопка (колёсико), 2 — ПКМ.
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
+
+      // Не даём средней кнопке включать автоскролл страницы.
+      if (event.button === 1) event.preventDefault();
 
       this.buttonsDown.add(event.button);
       this.buttonsPressed.add(event.button);
     });
 
     window.addEventListener('mouseup', (event) => {
-      if (event.button !== 0 && event.button !== 2) return;
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
       this.buttonsDown.delete(event.button);
       this.buttonsReleased.add(event.button);
     });

@@ -5,6 +5,10 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeTree } from '../models/props.js';
 
+// Единая процедурная «Валькирия» для уровней и фоновых полётов.
+// Реэкспорт, чтобы уровни могли собирать технику без прямых импортов модели.
+export { makeValkyrie } from '../models/valkyrie.js';
+
 export function makeMaterial(color, options = {}) {
   return new THREE.MeshStandardMaterial({
     color,

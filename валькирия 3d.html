@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Valkyrie - Warhammer 40k Procedural</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #121212; color: #ddd; font-family: monospace; }
+    #ui { position: absolute; top: 10px; left: 10px; background: rgba(0, 0, 0, 0.85); padding: 15px; border-radius: 5px; border: 1px solid #444; pointer-events: auto; width: 240px; }
+    #ui h1 { margin: 0 0 10px 0; font-size: 16px; color: #8bb1c9; }
+    #ui div { font-size: 12px; margin-bottom: 5px; }
+    #ui label { font-size: 12px; display: block; margin-top: 10px; margin-bottom: 5px; }
+    #ui input[type="range"] { width: 100%; }
+    #ui button { background: #333; color: #fff; border: 1px solid #555; padding: 5px 10px; margin-top: 8px; cursor: pointer; font-family: monospace; width: 100%; font-size: 12px; }
+    #ui button:hover { background: #444; }
+    #ui button.active { background: #8bb1c9; color: #000; }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; color: #8bb1c9; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loading">Сборка "Валькирии"...</div>
+  <div id="ui" style="display: none;">
+    <h1>Valkyrie Transport</h1>
+    <div>Треугольники: <span id="tris">0</span></div>
+    <div>Меши: <span id="meshes">0</span></div>
+    <div>Материалы: <span id="mats">0</span></div>
+    
+    <label for="exposure">Яркость: <span id="exp-val">1.5</span></label>
+    <input type="range" id="exposure" min="0.5" max="3.0" step="0.1" value="1.5">
+
+    <button id="btn-rotate">Auto-Rotate: ON</button>
+    <button id="btn-wire">Wireframe: OFF</button>
+    <button id="btn-reset">Reset Camera</button>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+    // ========================================================================
+    // UTILS (Твой шаблон)
+    // ========================================================================
+    const cyl = (rt, rb, h, seg = 16, hs = 1, open = false) => new THREE.CylinderGeometry(rt, rb, h, seg, hs, open);
+    const sph = (r, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h);
+    const cone = (r, h, seg = 12) => new THREE.ConeGeometry(r, h, seg);
+    const torus = (r, t, rs = 8, ts = 16, arc = Math.PI * 2) => new THREE.TorusGeometry(r, t, rs, ts, arc);
+
+    function beveledBox(width, height, depth, bevel = 0.01, bevelSegments = 1) {
+      const b = Math.min(bevel, width * 0.2, height * 0.2, depth * 0.2);
+      const w = Math.max(0.001, width - b * 2);
+      const h = Math.max(0.001, height - b * 2);
+      const innerDepth = Math.max(0.001, depth - b * 2);
+      const shape = new THREE.Shape();
+      shape.moveTo(-w / 2, -h / 2);
+      shape.lineTo(w / 2, -h / 2);
+      shape.lineTo(w / 2, h / 2);
+      shape.lineTo(-w / 2, h / 2);
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: innerDepth, bevelEnabled: true, bevelSize: b, bevelThickness: b, bevelSegments, curveSegments: 1, steps: 1
+      });
+      geometry.translate(0, 0, b - depth / 2);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function applyTransform(geometry, transform = {}) {
+      const position = transform.position || [0, 0, 0];
+      const rotation = transform.rotation || [0, 0, 0];
+      const scale = transform.scale || [1, 1, 1];
+      const matrix = new THREE.Matrix4();
+      const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2]));
+      matrix.compose(new THREE.Vector3(position[0], position[1], position[2]), quaternion, new THREE.Vector3(scale[0], scale[1], scale[2]));
+      geometry.applyMatrix4(matrix);
+      return geometry;
+    }
+
+    class VertexColorBuilder {
+      constructor(name = 'colored', materialParams = {}) {
+        this.name = name;
+        this.parts = [];
+        this.group = new THREE.Group();
+        this.group.name = name;
+        this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.5, ...materialParams });
+        this._color = new THREE.Color();
+      }
+      add(geometry, color, transform = {}) {
+        const prepared = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+        applyTransform(prepared, transform);
+        this._color.set(color);
+        const count = prepared.attributes.position.count;
+        const colors = new Float32Array(count * 3);
+        for (let i = 0; i < count; i += 1) {
+          colors[i * 3] = this._color.r;
+          colors[i * 3 + 1] = this._color.g;
+          colors[i * 3 + 2] = this._color.b;
+        }
+        prepared.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        this.parts.push(prepared);
+        return this;
+      }
+      build(options = {}) {
+        if (this.parts.length === 0) return this.group;
+        const merged = mergeGeometries(this.parts, false);
+        if (merged) {
+          const mesh = new THREE.Mesh(merged, this.material);
+          mesh.castShadow = options.castShadow !== false;
+          mesh.receiveShadow = options.receiveShadow !== false;
+          this.group.add(mesh);
+        }
+        this.parts = [];
+        return this.group;
+      }
+    }
+
+    // ========================================================================
+    // МАТЕРИАЛЫ
+    // ========================================================================
+    const M = {
+      glass: () => new THREE.MeshStandardMaterial({ color: 0x0a121a, roughness: 0.1, metalness: 0.9, transparent: true, opacity: 0.8 }),
+      glowBlue: () => new THREE.MeshStandardMaterial({ color: 0x66ccff, emissive: 0x2288dd, emissiveIntensity: 3.0 }),
+      glowOrange: () => new THREE.MeshStandardMaterial({ color: 0xff6b2b, emissive: 0xff4a12, emissiveIntensity: 2.5 }),
+    };
+
+    const C = {
+      hullBlue: 0x2c3e50,   // Основной темно-синий
+      hullDark: 0x1a252f,   // Тени, нижние панели
+      hullLight: 0x3d566e,  // Блики, верхние панели
+      metalDark: 0x111111,  // Черный матовый
+      metalLight: 0x6b6b70, // Светлый металл
+      copper: 0x8a5a3a,     // Медь/бронза
+      gold: 0xc8a24a,       // Имперский орел
+      bone: 0xc9bea0
+    };
+
+    // ========================================================================
+    // СБОРКА МОДЕЛИ
+    // ========================================================================
+    function buildValkyrie() {
+      const root = new THREE.Group();
+      
+      const hull = new VertexColorBuilder('hull', { roughness: 0.55, metalness: 0.6 });
+      const details = new VertexColorBuilder('details', { roughness: 0.7, metalness: 0.8 });
+      const glassGroup = new THREE.Group();
+
+      // ----------------------------------------------------------------------
+      // 1. ФЮЗЕЛЯЖ
+      // ----------------------------------------------------------------------
+      const bodyY = 3.5;
+
+      // Главный корпус (спереди толще, сзади сужается)
+      hull.add(beveledBox(2.8, 2.4, 5.5, 0.15, 2), C.hullBlue, { position: [0, bodyY, -0.5] });
+      
+      // Задняя часть (сужение)
+      const rearShape = new THREE.Shape();
+      rearShape.moveTo(-1.4, -1.2); rearShape.lineTo(1.4, -1.2);
+      rearShape.lineTo(0.8, 1.2); rearShape.lineTo(-0.8, 1.2);
+      rearShape.closePath();
+      const rearGeo = new THREE.ExtrudeGeometry(rearShape, { depth: 2.5, bevelEnabled: true, bevelSize: 0.1, bevelThickness: 0.1, bevelSegments: 2 });
+      rearGeo.rotateX(Math.PI / 2);
+      hull.add(rearGeo, C.hullBlue, { position: [0, bodyY, 2.25] });
+
+      // Носовая часть (клюв)
+      const noseGeo = new THREE.CylinderGeometry(0.6, 1.3, 2.5, 8);
+      noseGeo.rotateX(-Math.PI / 2);
+      hull.add(noseGeo, C.hullBlue, { position: [0, bodyY - 0.2, -4.5], rotation: [0.1, 0, 0] });
+
+      // Носовой таран
+      const ramGeo = cone(0.3, 1.0, 8);
+      ramGeo.rotateX(-Math.PI / 2);
+      hull.add(ramGeo, C.metalDark, { position: [0, bodyY - 0.4, -5.8] });
+
+      // Бронированный "подбородок"
+      hull.add(beveledBox(1.6, 0.8, 1.8, 0.1), C.hullDark, { position: [0, bodyY - 1.2, -3.8], rotation: [-0.2, 0, 0] });
+
+      // ----------------------------------------------------------------------
+      // 2. КАБИНА
+      // ----------------------------------------------------------------------
+      // Стекло
+      const glass = new THREE.Mesh(beveledBox(1.4, 0.8, 1.8, 0.05), M.glass());
+      glass.position.set(0, bodyY + 1.0, -3.0);
+      glass.rotation.x = -0.4;
+      glassGroup.add(glass);
+
+      // Тяжелые бронеплиты кабины (формируют угловатый колпак)
+      hull.add(beveledBox(1.6, 0.2, 2.0, 0.05), C.hullDark, { position: [0, bodyY + 1.4, -3.0], rotation: [-0.4, 0, 0] });
+      hull.add(beveledBox(1.6, 0.2, 0.6, 0.05), C.hullDark, { position: [0, bodyY + 0.6, -3.8], rotation: [-0.4, 0, 0] });
+      // Центральная стойка
+      hull.add(beveledBox(0.2, 0.8, 1.8, 0.05), C.hullDark, { position: [0, bodyY + 1.0, -3.0], rotation: [-0.4, 0, 0] });
+
+      // ----------------------------------------------------------------------
+      // 3. ДВИГАТЕЛИ (Топ-маунт)
+      // ----------------------------------------------------------------------
+      const engineY = bodyY + 1.8;
+      const engineZ = 0.5;
+
+      for (const side of [-1, 1]) {
+        const ex = side * 1.2;
+
+        // Массивное основание двигателя
+        hull.add(beveledBox(1.2, 0.8, 3.2, 0.1), C.hullDark, { position: [ex, engineY - 0.6, engineZ] });
+
+        // Главный цилиндр турбины
+        details.add(cyl(0.75, 0.85, 3.4, 24, 3), C.metalDark, { position: [ex, engineY, engineZ], rotation: [Math.PI / 2, 0, 0] });
+
+        // Медные обмотки / катушки (очень характерная деталь для 40k)
+        for (let i = 0; i < 5; i++) {
+          details.add(cyl(0.8, 0.8, 0.15, 24, 1), C.copper, { position: [ex, engineY, engineZ - 1.2 + i * 0.6], rotation: [Math.PI / 2, 0, 0] });
+        }
+
+        // Впускной вентилятор
+        details.add(cyl(0.7, 0.7, 0.4, 24, 1), C.metalLight, { position: [ex, engineY, engineZ - 1.8], rotation: [Math.PI / 2, 0, 0] });
+        details.add(cyl(0.6, 0.6, 0.1, 24, 1), C.metalDark, { position: [ex, engineY, engineZ - 2.0], rotation: [Math.PI / 2, 0, 0] });
+        
+        // Лопасти
+        for (let i = 0; i < 16; i++) {
+          const angle = (i / 16) * Math.PI * 2;
+          details.add(beveledBox(0.08, 0.55, 0.05, 0.01), C.bone, {
+            position: [ex + Math.cos(angle) * 0.3, engineY + Math.sin(angle) * 0.3, engineZ - 1.9],
+            rotation: [0, 0, angle]
+          });
+        }
+
+        // Выхлопное сопло (сзади)
+        details.add(cyl(0.6, 0.8, 1.2, 24, 2), C.metalDark, { position: [ex, engineY, engineZ + 2.2], rotation: [Math.PI / 2, 0, 0] });
+        details.add(torus(0.6, 0.1, 8, 24), C.metalLight, { position: [ex, engineY, engineZ + 2.8] });
+        
+        // Свечение внутри сопла
+        const glow = new THREE.Mesh(cyl(0.5, 0.5, 0.1, 16), M.glowOrange());
+        glow.position.set(ex, engineY, engineZ + 2.5);
+        glow.rotation.x = Math.PI / 2;
+        glassGroup.add(glow);
+      }
+
+      // ----------------------------------------------------------------------
+      // 4. КРЫЛЬЯ И ПОДКРЫЛЬЕВЫЕ ГОНДОЛЫ
+      // ----------------------------------------------------------------------
+      const podX = 6.5;
+      
+      for (const side of [-1, 1]) {
+        // --- КРЫЛО (Создаем кастомную форму для аэродинамики) ---
+        const wingShape = new THREE.Shape();
+        // Отрисовываем профиль крыла сверху (X, Z)
+        wingShape.moveTo(side * 1.4, -1.5);   // Корень (перед)
+        wingShape.lineTo(side * 6.5, -0.5);   // Кончик (перед)
+        wingShape.lineTo(side * 6.5, 1.5);    // Кончик (зад)
+        wingShape.lineTo(side * 1.4, 2.5);    // Корень (зад)
+        wingShape.closePath();
+
+        const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
+          depth: 0.4,
+          bevelEnabled: true,
+          bevelSize: 0.08,
+          bevelThickness: 0.08,
+          bevelSegments: 2
+        });
+        wingGeo.rotateX(Math.PI / 2); // Кладем крыло плашмя
+        hull.add(wingGeo, C.hullBlue, { position: [0, bodyY - 0.8, 0] });
+
+        // Закрылки (сзади крыла)
+        hull.add(beveledBox(4.5, 0.15, 0.6, 0.05), C.hullDark, {
+          position: [side * 4.0, bodyY - 0.9, 2.2],
+          rotation: [0, side * -0.2, 0]
+        });
+
+        // --- ГОНДОЛА (Массивная коробка на конце) ---
+        const podY = bodyY - 0.8;
+        const podZ = 0.5;
+
+        // Основной корпус
+        hull.add(beveledBox(1.4, 1.6, 3.8, 0.15, 2), C.hullBlue, { position: [side * podX, podY, podZ] });
+        
+        // Верхний обтекатель
+        hull.add(beveledBox(1.0, 0.4, 3.2, 0.1), C.hullDark, { position: [side * podX, podY + 1.0, podZ] });
+
+        // Турбина гондолы (спереди)
+        details.add(cyl(0.55, 0.55, 1.0, 24, 2), C.metalDark, { position: [side * podX, podY, podZ - 2.0], rotation: [Math.PI / 2, 0, 0] });
+        details.add(cyl(0.5, 0.5, 0.1, 24), C.metalLight, { position: [side * podX, podY, podZ - 2.5], rotation: [Math.PI / 2, 0, 0] });
+        
+        // Вентилятор
+        for (let i = 0; i < 12; i++) {
+          const angle = (i / 12) * Math.PI * 2;
+          details.add(beveledBox(0.06, 0.45, 0.05, 0.01), C.bone, {
+            position: [side * podX + Math.cos(angle) * 0.25, podY + Math.sin(angle) * 0.25, podZ - 2.45],
+            rotation: [0, 0, angle]
+          });
+        }
+        
+        // Выхлоп гондолы (сзади)
+        details.add(cyl(0.4, 0.5, 0.6, 16), C.metalDark, { position: [side * podX, podY, podZ + 2.2], rotation: [Math.PI / 2, 0, 0] });
+
+        // --- ТЯЖЕЛОЕ ОРУЖИЕ (Автопушки под гондолой) ---
+        const gunY = podY - 1.2;
+        const gunZ = podZ - 0.5;
+
+        // Массивный пилон
+        hull.add(beveledBox(0.4, 0.8, 1.2, 0.05), C.metalDark, { position: [side * podX, gunY + 0.5, gunZ] });
+        
+        // Корпус пушки
+        hull.add(beveledBox(0.8, 0.6, 2.2, 0.08), C.hullDark, { position: [side * podX, gunY, gunZ] });
+        
+        // Спаренные стволы
+        for (let i = 0; i < 2; i++) {
+          const bx = side * podX - 0.2 + i * 0.4;
+          
+          // Кожух ствола (с вентиляцией)
+          details.add(cyl(0.12, 0.12, 1.5, 12), C.metalDark, { position: [bx, gunY, gunZ - 1.6], rotation: [Math.PI / 2, 0, 0] });
+          for (let j = 0; j < 4; j++) {
+            details.add(torus(0.13, 0.02, 6, 12), C.metalLight, { position: [bx, gunY, gunZ - 1.2 - j * 0.25], rotation: [Math.PI / 2, 0, 0] });
+          }
+          
+          // Дульный тормоз
+          details.add(cyl(0.18, 0.18, 0.4, 12), C.metalDark, { position: [bx, gunY, gunZ - 2.5], rotation: [Math.PI / 2, 0, 0] });
+        }
+      }
+
+      // ----------------------------------------------------------------------
+      // 5. ХВОСТ (Двухбалочный)
+      // ----------------------------------------------------------------------
+      const tailZ = 4.5;
+      for (const side of [-1, 1]) {
+        // Балки (идут от корпуса к хвосту)
+        hull.add(beveledBox(0.4, 0.8, 4.5, 0.1), C.hullBlue, { position: [side * 1.8, bodyY - 0.2, tailZ] });
+        
+        // Вертикальные кили
+        hull.add(beveledBox(0.2, 1.8, 1.6, 0.05), C.hullLight, { position: [side * 1.8, bodyY + 1.0, tailZ + 1.0] });
+      }
+      
+      // Горизонтальный стабилизатор (между балками)
+      hull.add(beveledBox(3.6, 0.15, 1.6, 0.05), C.hullBlue, { position: [0, bodyY + 0.2, tailZ + 1.0] });
+
+      // ----------------------------------------------------------------------
+      // 6. ШАССИ (Гарантированно упирается в Y=0)
+      // ----------------------------------------------------------------------
+      const buildGear = (x, yTop, z, length, width) => {
+        // Главная стойка (Y от yTop до 0)
+        details.add(cyl(0.12, 0.2, length, 12), C.metalLight, { position: [x, yTop - length/2, z] });
+        
+        // Гидравлика (доп. цилиндр)
+        details.add(cyl(0.08, 0.08, length * 0.8, 8), C.metalDark, { position: [x + 0.15, yTop - length * 0.5, z] });
+        
+        // Шарнир сверху
+        details.add(sph(0.25, 12, 8), C.metalDark, { position: [x, yTop, z] });
+        
+        // Опорная плита (в самом низу)
+        details.add(beveledBox(width, 0.15, 1.4, 0.05), C.metalDark, { position: [x, 0.075, z + 0.2] });
+        
+        // Усилители
+        details.add(beveledBox(width * 0.6, 0.1, 0.5, 0.02), C.metalLight, { position: [x, 0.05, z - 0.4] });
+      };
+
+      // Носовая стойка (под "подбородком")
+      buildGear(0, bodyY - 1.4, -3.2, bodyY - 1.4, 1.0);
+      
+      // Задние стойки (под гондолами)
+      // Низ гондолы: podY - 0.8 (половина высоты коробки 1.6)
+      const podBottomY = (bodyY - 0.8) - 0.8;
+      buildGear(-podX, podBottomY, 0.5, podBottomY, 1.2);
+      buildGear(podX, podBottomY, 0.5, podBottomY, 1.2);
+
+      // ----------------------------------------------------------------------
+      // 7. ДЕКОР (Аквила, заклепки, решетки)
+      // ----------------------------------------------------------------------
+      // Имперский орел на носу
+      details.add(beveledBox(0.5, 0.2, 0.1, 0.02), C.gold, { position: [0, bodyY - 0.6, -4.8], rotation: [0.1, 0, 0] });
+      for (const side of [-1, 1]) {
+        details.add(beveledBox(0.4, 0.1, 0.05, 0.01), C.gold, { position: [side * 0.4, bodyY - 0.5, -4.7], rotation: [0.1, 0, side * 0.4] });
+      }
+
+      // Решетки на боках фюзеляжа
+      for (let i = 0; i < 3; i++) {
+        for (const side of [-1, 1]) {
+          details.add(beveledBox(0.05, 0.6, 1.0, 0.02), C.metalDark, { position: [side * 1.41, bodyY - 0.2, -1.5 + i * 1.2] });
+          for (let j = 0; j < 4; j++) {
+            details.add(beveledBox(0.02, 0.4, 0.1, 0.005), C.metalLight, { position: [side * 1.42, bodyY - 0.2, -1.7 + j * 0.2 + i * 1.2] });
+          }
+        }
+      }
+
+      // Заклепки на корпусе
+      for (let i = 0; i < 24; i++) {
+        const z = -2.5 + (i % 6) * 0.9;
+        const y = bodyY - 1.0 + Math.floor(i / 6) * 0.6;
+        for (const side of [-1, 1]) {
+          details.add(cyl(0.04, 0.04, 0.05, 6), C.metalLight, { position: [side * 1.41, y, z], rotation: [0, 0, Math.PI / 2] });
+        }
+      }
+
+      root.add(hull.build());
+      root.add(details.build());
+      root.add(glassGroup);
+
+      return root;
+    }
+
+    // ========================================================================
+    // СЦЕНА, СВЕТ, КАМЕРА
+    // ========================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0f1115);
+    scene.fog = new THREE.Fog(0x0f1115, 25, 60);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const defaultCamPos = new THREE.Vector3(12, 8, 14);
+    camera.position.copy(defaultCamPos);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.5;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.target.set(0, 2.5, 0);
+    controls.maxPolarAngle = Math.PI / 2 + 0.1;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.8;
+
+    // Свет
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const hemiLight = new THREE.HemisphereLight(0x8bb1c9, 0x2a2a2a, 1.2);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xfff0dd, 3.0);
+    dirLight.position.set(10, 20, 10);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 1;
+    dirLight.shadow.camera.far = 50;
+    dirLight.shadow.camera.left = -15;
+    dirLight.shadow.camera.right = 15;
+    dirLight.shadow.camera.top = 15;
+    dirLight.shadow.camera.bottom = -15;
+    dirLight.shadow.bias = -0.001;
+    scene.add(dirLight);
+
+    const rimLight = new THREE.DirectionalLight(0x66ccff, 1.5);
+    rimLight.position.set(-10, 10, -15);
+    scene.add(rimLight);
+
+    // Пол
+    const gridHelper = new THREE.GridHelper(100, 100, 0x333333, 0x111111);
+    scene.add(gridHelper);
+    
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.9 });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.position.y = -0.01;
+    scene.add(floor);
+
+    // ========================================================================
+    // UI И ЗАГРУЗКА
+    // ========================================================================
+    setTimeout(() => {
+      const valkyrie = buildValkyrie();
+      
+      let tris = 0, meshes = 0;
+      const materials = new Set();
+      
+      valkyrie.traverse((child) => {
+        if (child.isMesh) {
+          meshes++;
+          materials.add(child.material);
+          const g = child.geometry;
+          tris += g.index ? g.index.count / 3 : g.attributes.position.count / 3;
+        }
+      });
+
+      scene.add(valkyrie);
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('ui').style.display = 'block';
+      document.getElementById('tris').innerText = Math.round(tris).toLocaleString();
+      document.getElementById('meshes').innerText = meshes;
+      document.getElementById('mats').innerText = materials.size;
+
+    }, 100);
+
+    let wireframe = false;
+    const btnRotate = document.getElementById('btn-rotate');
+    const btnWire = document.getElementById('btn-wire');
+    const btnReset = document.getElementById('btn-reset');
+
+    btnRotate.addEventListener('click', () => {
+      controls.autoRotate = !controls.autoRotate;
+      btnRotate.innerText = `Auto-Rotate: ${controls.autoRotate ? 'ON' : 'OFF'}`;
+      btnRotate.classList.toggle('active', controls.autoRotate);
+    });
+
+    btnWire.addEventListener('click', () => {
+      wireframe = !wireframe;
+      btnWire.innerText = `Wireframe: ${wireframe ? 'ON' : 'OFF'}`;
+      btnWire.classList.toggle('active', wireframe);
+      scene.traverse((child) => {
+        if (child.isMesh) child.material.wireframe = wireframe;
+      });
+    });
+
+    btnReset.addEventListener('click', () => {
+      camera.position.copy(defaultCamPos);
+      controls.target.set(0, 2.5, 0);
+      controls.update();
+    });
+
+    const exposureSlider = document.getElementById('exposure');
+    const expVal = document.getElementById('exp-val');
+    exposureSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      renderer.toneMappingExposure = val;
+      expVal.innerText = val.toFixed(1);
+    });
+    
+    btnRotate.classList.add('active');
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

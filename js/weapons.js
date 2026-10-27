@@ -8,7 +8,8 @@ import {
   makeBolter,
   makeChainsword,
   makePlayerArms,
-  makeGrenade
+  makeGrenade,
+  makeLauncher
 } from './models/index.js';
 
 export class WeaponSystem {
@@ -64,6 +65,25 @@ export class WeaponSystem {
     this.chainOffset = 0;
     this.kick = 0;
 
+    // Визуальные эффекты взрывов (сфера, свет, осколки).
+    this.effects = [];
+
+    // ПЗРК.
+    this.hasLauncher = false;
+    this.aiming = false;
+    this.baseFov = CONFIG.render.fov;
+    this.aimFov = 34;
+    this.lockTarget = null;
+    this.lockTimer = 0;
+    this.locked = false;
+    this.lockBeepTimer = 0;
+    this.launcherCooldown = 0;
+    this.missiles = [];
+
+    this._tmpVec = new THREE.Vector3();
+    this._tmpVec2 = new THREE.Vector3();
+    this._tmpQuat = new THREE.Quaternion();
+
     this._buildViewmodel();
   }
 
@@ -80,9 +100,24 @@ export class WeaponSystem {
     this.arms = makePlayerArms();
     this.arms.position.set(0.02, 0.1, -0.08);
     this.arms.scale.setScalar(0.55);
-    // Левая рука поддерживает цевьё — подводим её ближе к оружию.
-    this.arms.userData.leftArm.position.set(0.12, -0.45, -0.8);
-    this.arms.userData.leftArm.rotation.set(-0.1, 0.12, -0.2);
+    // Позы левой руки под каждый слот, чтобы она не «висела в воздухе».
+    this.leftArm = this.arms.userData.leftArm;
+    this.leftArmPoses = {
+      bolter: {
+        position: new THREE.Vector3(0.12, -0.45, -0.8),
+        rotation: new THREE.Euler(-0.1, 0.12, -0.2)
+      },
+      chainsword: {
+        position: new THREE.Vector3(0.2, -0.48, -0.42),
+        rotation: new THREE.Euler(-0.42, 0.34, -0.34)
+      },
+      pzrk: {
+        position: new THREE.Vector3(0.16, -0.5, -0.48),
+        rotation: new THREE.Euler(-0.24, 0.2, -0.24)
+      }
+    };
+    this.leftArm.position.copy(this.leftArmPoses.bolter.position);
+    this.leftArm.rotation.copy(this.leftArmPoses.bolter.rotation);
     this.viewRoot.add(this.arms);
 
     // Болтер.
@@ -116,6 +151,14 @@ export class WeaponSystem {
     this.grenadeView.position.set(-0.26, -0.24, -0.6);
     this.grenadeView.visible = false;
     this.viewRoot.add(this.grenadeView);
+
+    // ПЗРК (скрыт до выдачи в админ-меню).
+    this.launcher = makeLauncher();
+    this.launcher.scale.setScalar(0.62);
+    this.launcher.position.set(0.14, -0.22, -0.55);
+    this.launcher.rotation.set(0.02, 0.03, -0.02);
+    this.launcher.visible = false;
+    this.viewRoot.add(this.launcher);
 
     // Вспышка выстрела.
     const muzzle = this.bolter.userData.muzzle;
@@ -157,6 +200,8 @@ export class WeaponSystem {
     if (!active) {
       this.viewRoot.position.set(0, 0, 0);
       this.viewRoot.rotation.set(0, 0, 0);
+      this._setAiming(false);
+      this._cancelLock();
     }
   }
 
@@ -168,6 +213,7 @@ export class WeaponSystem {
     this.hasBolter = false;
     this.hasChainsword = false;
     this.hasGrenades = false;
+    // hasLauncher не сбрасываем: выдача из админ-меню должна сохраняться.
 
     this.magazine = 0;
     this.reserve = 0;
@@ -193,17 +239,52 @@ export class WeaponSystem {
     } else if (kind === 'grenades') {
       this.hasGrenades = true;
       this.grenades = CONFIG.weapons.grenade.startAmmo;
+    } else if (kind === 'pzrk') {
+      this.hasLauncher = true;
     }
     this._applyOwnership();
     this._updateHud();
   }
 
   // Синхронизирует видимость моделей с владением и выбранным слотом.
+  // Старое оружие, его прицел и магазин скрываются вместе с группой.
   _applyOwnership() {
-    this.arms.visible = this.hasBolter || this.hasChainsword;
-    this.bolter.visible = this.hasBolter && this.slot === 'bolter' && !this.swinging;
-    this.chainsword.visible = this.hasChainsword && (this.slot === 'chainsword' || this.swinging);
+    const effectiveSlot = this.swinging && this.tempMelee ? 'chainsword' : this.slot;
+
+    this.arms.visible = this.hasBolter || this.hasChainsword || this.hasLauncher;
+    this.bolter.visible = this.hasBolter && effectiveSlot === 'bolter';
+    this.chainsword.visible = this.hasChainsword && effectiveSlot === 'chainsword';
+    this.launcher.visible = this.hasLauncher && effectiveSlot === 'pzrk';
     this.grenadeView.visible = false;
+
+    this._applyLeftArmPose(effectiveSlot);
+    this._applyWeaponPose(effectiveSlot);
+
+    // Вспышка болтера не должна оставаться висеть после смены слота.
+    if (!this.bolter.visible) {
+      if (this.muzzleFlash) this.muzzleFlash.visible = false;
+      if (this.muzzleLight) this.muzzleLight.intensity = 0;
+    }
+  }
+
+  _applyLeftArmPose(slot) {
+    if (!this.leftArm) return;
+    const pose = this.leftArmPoses?.[slot] || this.leftArmPoses?.bolter;
+    if (!pose) return;
+    this.leftArm.position.copy(pose.position);
+    this.leftArm.rotation.copy(pose.rotation);
+  }
+
+  _applyWeaponPose(slot) {
+    // Гарантированно возвращаем меч/ПЗРК в исходную позу при переключении.
+    if (slot !== 'chainsword') {
+      this.chainsword.position.copy(this.chainswordBasePosition);
+      this.chainsword.rotation.copy(this.chainswordBaseRotation);
+    }
+    if (this.launcher) {
+      this.launcher.position.set(0.14, -0.22, -0.55);
+      this.launcher.rotation.set(0.02, 0.03, -0.02);
+    }
   }
 
   reset() {
@@ -213,6 +294,7 @@ export class WeaponSystem {
     this.hasBolter = true;
     this.hasChainsword = true;
     this.hasGrenades = true;
+    // hasLauncher намеренно сохраняется между уровнями: это админ-инструмент.
 
     this.fireTimer = 0;
     this.reloadTimer = 0;
@@ -226,7 +308,10 @@ export class WeaponSystem {
     this.grenadeViewTimer = 0;
     this.kick = 0;
 
+    this._setAiming(false);
+    this._cancelLock();
     this._clearProjectiles();
+    this._clearMissiles();
     this.setSlot('bolter');
     this._applyOwnership();
     this._updateHud();
@@ -245,17 +330,27 @@ export class WeaponSystem {
   }
 
   setSlot(slot) {
-    if (slot !== 'bolter' && slot !== 'chainsword') return;
+    if (slot !== 'bolter' && slot !== 'chainsword' && slot !== 'pzrk') return;
+    if (slot === 'bolter' && !this.hasBolter) return;
+    if (slot === 'chainsword' && !this.hasChainsword) return;
+    if (slot === 'pzrk' && !this.hasLauncher) return;
     if (this.swinging && this.tempMelee) return;
 
-    this.slot = slot;
-    this.bolter.visible = this.hasBolter && slot === 'bolter';
-    this.chainsword.visible = this.hasChainsword && slot === 'chainsword';
-    this.chainsword.position.copy(this.chainswordBasePosition);
-    this.chainsword.rotation.copy(this.chainswordBaseRotation);
+    if (slot !== 'pzrk') this._setAiming(false);
+    this._cancelLock();
 
-    this.hud.setWeapon(slot === 'bolter' ? 'Болтер' : 'Цепной меч');
+    this.slot = slot;
+    this._applyOwnership();
+    this._updateHud();
     this.audio.playUiClick();
+  }
+
+  // Выдача ПЗРК из админ-меню.
+  grantLauncher() {
+    this.hasLauncher = true;
+    this.setSlot('pzrk');
+    this._updateHud();
+    return this.hasLauncher;
   }
 
   // -------------------------------------------------------------------------
@@ -272,6 +367,10 @@ export class WeaponSystem {
     }
 
     this._updateAnimations(dt);
+    this._updateFov(dt);
+    this._updatePzrk(dt);
+    this._updateMissiles(dt);
+    this._updateEffects(dt);
 
     if (this.active) {
       this._updateProjectiles(dt);
@@ -282,6 +381,8 @@ export class WeaponSystem {
     this.fireTimer = Math.max(0, this.fireTimer - dt);
     this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
     this.grenadeCooldown = Math.max(0, this.grenadeCooldown - dt);
+    this.launcherCooldown = Math.max(0, this.launcherCooldown - dt);
+    this.lockBeepTimer = Math.max(0, this.lockBeepTimer - dt);
 
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
@@ -335,12 +436,21 @@ export class WeaponSystem {
   _handleInput() {
     if (this.input.wasPressed('Digit1') && this.hasBolter) this.setSlot('bolter');
     if (this.input.wasPressed('Digit2') && this.hasChainsword) this.setSlot('chainsword');
+    if (this.input.wasPressed('Digit4') && this.hasLauncher) this.setSlot('pzrk');
 
     if (this.input.wasPressed('KeyR')) this._startReload();
     if (this.input.wasPressed('KeyG')) this._throwGrenade();
-    if (this.input.wasMousePressed(2)) this._startMelee();
 
-    if (this.hasBolter && this.slot === 'bolter' && !this.reloading && this.fireTimer <= 0 && this.input.isMouseDown(0)) {
+    // ПКМ — замах мечом; в слоте ПЗРК ПКМ работает как прицеливание.
+    if (this.input.wasMousePressed(2) && this.slot !== 'pzrk') this._startMelee();
+
+    if (
+      this.hasBolter &&
+      this.slot === 'bolter' &&
+      !this.reloading &&
+      this.fireTimer <= 0 &&
+      this.input.isMouseDown(0)
+    ) {
       this._fireBolter();
     }
   }
@@ -427,10 +537,9 @@ export class WeaponSystem {
     this.swingHitDone = false;
 
     this.tempMelee = this.slot !== 'chainsword';
-    if (this.tempMelee) {
-      this.bolter.visible = false;
-      this.chainsword.visible = true;
-    }
+    // Переводим руки и видимость оружия в боевую стойку меча целиком,
+    // чтобы от болтера не оставалось «висящих» элементов.
+    this._applyOwnership();
 
     this.audio.playMelee();
     this._emitNoise(8);
@@ -514,6 +623,7 @@ export class WeaponSystem {
     this.audio.playExplosion();
     this.player.addShake(0.8, 0.5);
     this._emitNoise(30, center);
+    this._spawnExplosionVisual(center);
 
     const targetPosition = new THREE.Vector3();
 
@@ -541,6 +651,394 @@ export class WeaponSystem {
     }
 
     this.onExplosion?.(center);
+  }
+
+  // Визуал взрыва: сфера, свет и осколки. Живёт в списке effects,
+  // обновляется и освобождается в _updateEffects().
+  _spawnExplosionVisual(center) {
+    const group = new THREE.Group();
+    group.name = 'grenade-explosion';
+    group.position.copy(center);
+    this.scene.add(group);
+
+    const sphereGeometry = new THREE.SphereGeometry(1, 16, 12);
+    const sphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffb060,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    sphere.scale.setScalar(0.4);
+    sphere.renderOrder = 6;
+    group.add(sphere);
+
+    const light = new THREE.PointLight(0xff8a2a, 9, 20, 2);
+    light.position.set(0, 0.4, 0);
+    light.castShadow = false;
+    group.add(light);
+
+    // Осколки/комья земли: маленькие тёмные сферы с разлётом.
+    const debrisGeometry = new THREE.SphereGeometry(0.09, 6, 5);
+    const debrisMaterial = new THREE.MeshStandardMaterial({
+      color: 0x2a2622,
+      roughness: 1.0,
+      metalness: 0.05
+    });
+
+    const debris = [];
+    const count = 12;
+    for (let i = 0; i < count; i += 1) {
+      const mesh = new THREE.Mesh(debrisGeometry, debrisMaterial);
+      const angle = Math.random() * Math.PI * 2;
+      const spread = 0.2 + Math.random() * 0.35;
+      mesh.position.set(
+        Math.cos(angle) * spread * 0.4,
+        0.1 + Math.random() * 0.25,
+        Math.sin(angle) * spread * 0.4
+      );
+      const baseScale = 0.6 + Math.random() * 1.1;
+      mesh.scale.setScalar(baseScale);
+      mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+      group.add(mesh);
+
+      debris.push({
+        mesh,
+        baseScale,
+        velocity: new THREE.Vector3(
+          Math.cos(angle) * (2 + Math.random() * 4),
+          3 + Math.random() * 5,
+          Math.sin(angle) * (2 + Math.random() * 4)
+        )
+      });
+    }
+
+    this.effects.push({
+      group,
+      sphere,
+      sphereGeometry,
+      sphereMaterial,
+      light,
+      debris,
+      debrisGeometry,
+      debrisMaterial,
+      age: 0,
+      duration: 1.0,
+      groundY: -center.y + 0.05
+    });
+  }
+
+  _updateEffects(dt) {
+    for (let i = this.effects.length - 1; i >= 0; i -= 1) {
+      const effect = this.effects[i];
+      effect.age += dt;
+
+      if (effect.age <= 0.3) {
+        const p = effect.age / 0.3;
+        effect.sphere.visible = true;
+        effect.sphere.scale.setScalar(0.4 + p * 6.0);
+        effect.sphereMaterial.opacity = 0.9 * (1 - p);
+      } else {
+        effect.sphere.visible = false;
+      }
+
+      effect.light.intensity = Math.max(0, 9 * (1 - effect.age / 0.45));
+
+      for (const item of effect.debris) {
+        item.velocity.y -= 12 * dt;
+        item.mesh.position.addScaledVector(item.velocity, dt);
+
+        if (item.mesh.position.y < effect.groundY) {
+          item.mesh.position.y = effect.groundY;
+          item.velocity.y = Math.abs(item.velocity.y) * 0.32;
+          item.velocity.x *= 0.68;
+          item.velocity.z *= 0.68;
+        }
+
+        item.mesh.rotation.x += dt * 9;
+        item.mesh.rotation.z += dt * 6;
+
+        const shrink = Math.max(0, 1 - effect.age / effect.duration);
+        item.mesh.scale.setScalar(Math.max(0.001, item.baseScale * shrink));
+      }
+
+      if (effect.age >= effect.duration) {
+        this.scene.remove(effect.group);
+        effect.sphereGeometry.dispose();
+        effect.sphereMaterial.dispose();
+        effect.debrisGeometry.dispose();
+        effect.debrisMaterial.dispose();
+        this.effects.splice(i, 1);
+      }
+    }
+  }
+
+  _clearEffects() {
+    for (const effect of this.effects) {
+      this.scene.remove(effect.group);
+      effect.sphereGeometry.dispose();
+      effect.sphereMaterial.dispose();
+      effect.debrisGeometry.dispose();
+      effect.debrisMaterial.dispose();
+    }
+    this.effects = [];
+  }
+
+  // -------------------------------------------------------------------------
+  // ПЗРК: прицеливание, захват и ракета
+  // -------------------------------------------------------------------------
+
+  _setAiming(active) {
+    const next = Boolean(active);
+    if (this.aiming === next) {
+      if (!next && Math.abs(this.camera.fov - this.baseFov) > 0.01) {
+        this.camera.fov = this.baseFov;
+        this.camera.updateProjectionMatrix();
+      }
+      return;
+    }
+
+    this.aiming = next;
+    if (!next) {
+      this.camera.fov = this.baseFov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  _updateFov(dt) {
+    const target = this.aiming ? this.aimFov : this.baseFov;
+    if (Math.abs(this.camera.fov - target) < 0.01) return;
+
+    this.camera.fov += (target - this.camera.fov) * Math.min(1, dt * 12);
+    this.camera.updateProjectionMatrix();
+  }
+
+  _cancelLock() {
+    this.lockTarget = null;
+    this.lockTimer = 0;
+    this.locked = false;
+    this.lockBeepTimer = 0;
+    this.hud?.setLock(0, false);
+  }
+
+  _updatePzrk(dt) {
+    if (!this.active || this.slot !== 'pzrk' || !this.hasLauncher) {
+      if (this.aiming) this._setAiming(false);
+      if (this.locked || this.lockTarget) this._cancelLock();
+      return;
+    }
+
+    const aiming = this.input.isMouseDown(2);
+    this._setAiming(aiming);
+
+    if (!aiming) {
+      if (this.locked || this.lockTarget) this._cancelLock();
+      return;
+    }
+
+    // Уже захваченная цель: держим красный квадрат и ждём пуска.
+    if (this.locked && this.lockTarget) {
+      const health = this.lockTarget.userData?.damageable?.health ?? 0;
+      if (!this.lockTarget.parent || health <= 0) {
+        this._cancelLock();
+        return;
+      }
+
+      this.hud?.setLock(1, true);
+      if (this.launcherCooldown <= 0 && this.input.wasMousePressed(0)) {
+        this._launchMissile();
+      }
+      return;
+    }
+
+    // Ищем истребитель в центре экрана.
+    this.camera.updateMatrixWorld(true);
+    for (const target of this.targets) target.updateWorldMatrix(true, true);
+
+    const origin = this.player.getEyePosition(this._tmpVec);
+    const direction = this.player.getLookDirection(this._tmpVec2);
+
+    this.raycaster.set(origin, direction);
+    this.raycaster.far = 400;
+
+    const hits = this.raycaster.intersectObjects([...this.targets], true);
+    const root = hits.length > 0 ? this._findDamageable(hits[0].object) : null;
+    const isFighter =
+      root &&
+      root.userData?.kind === 'ork-fighter' &&
+      (root.userData?.damageable?.health ?? 0) > 0;
+
+    if (!isFighter) {
+      this.lockTarget = null;
+      this.lockTimer = 0;
+      this.locked = false;
+      this.hud?.setLock(0, false);
+      return;
+    }
+
+    if (this.lockTarget !== root) {
+      this.lockTarget = root;
+      this.lockTimer = 0;
+    }
+
+    this.lockTimer += dt;
+
+    if (this.lockBeepTimer <= 0) {
+      this.audio.playLockBeep();
+      this.lockBeepTimer = 0.16;
+    }
+
+    if (this.lockTimer >= 1.0) {
+      this.locked = true;
+      this.audio.playLockAcquired();
+      this.hud?.setLock(1, true);
+    } else {
+      this.hud?.setLock(this.lockTimer, false);
+    }
+  }
+
+  _createMissileMesh() {
+    const group = new THREE.Group();
+    group.name = 'pzrk-missile';
+
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6b6b70,
+      roughness: 0.45,
+      metalness: 0.8
+    });
+    const noseMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff3a1a,
+      emissive: 0xff2a08,
+      emissiveIntensity: 2.2,
+      roughness: 0.4
+    });
+    const glowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffb060,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    // Корпус вдоль -Z.
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 12), bodyMaterial);
+    body.rotation.x = Math.PI / 2;
+    group.add(body);
+
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 12), noseMaterial);
+    nose.rotation.x = -Math.PI / 2;
+    nose.position.z = -0.33;
+    group.add(nose);
+
+    // Сопло и выхлоп.
+    const exhaust = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.3, 10), glowMaterial);
+    exhaust.rotation.x = Math.PI / 2;
+    exhaust.position.z = 0.38;
+    group.add(exhaust);
+
+    const light = new THREE.PointLight(0xff7a2a, 3, 8, 2);
+    light.position.z = 0.35;
+    light.castShadow = false;
+    group.add(light);
+
+    group.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = false;
+        child.receiveShadow = false;
+      }
+    });
+
+    return group;
+  }
+
+  _launchMissile() {
+    if (!this.lockTarget || this.launcherCooldown > 0) return;
+
+    this.launcherCooldown = 1.6;
+
+    const origin = this.player.getEyePosition(new THREE.Vector3());
+    const direction = this.player.getLookDirection(new THREE.Vector3());
+    const start = origin.clone().addScaledVector(direction, 0.9);
+    start.y -= 0.06;
+
+    const mesh = this._createMissileMesh();
+    mesh.position.copy(start);
+    this.scene.add(mesh);
+
+    const targetPos = new THREE.Vector3();
+    this.lockTarget.getWorldPosition(targetPos);
+    const initialDirection = targetPos.clone().sub(start).normalize();
+
+    this.missiles.push({
+      mesh,
+      direction: initialDirection,
+      speed: 55,
+      life: 7,
+      target: this.lockTarget
+    });
+
+    this.audio.playRocketLaunch();
+    this._cancelLock();
+  }
+
+  _updateMissiles(dt) {
+    for (let i = this.missiles.length - 1; i >= 0; i -= 1) {
+      const missile = this.missiles[i];
+      missile.life -= dt;
+
+      let targetPos = null;
+      const targetHealth = missile.target?.userData?.damageable?.health ?? 0;
+      if (missile.target?.parent && targetHealth > 0) {
+        targetPos = missile.target.getWorldPosition(this._tmpVec);
+        const desired = this._tmpVec2.copy(targetPos).sub(missile.mesh.position).normalize();
+        missile.direction.lerp(desired, Math.min(1, dt * 4.5)).normalize();
+      }
+
+      missile.mesh.position.addScaledVector(missile.direction, missile.speed * dt);
+      // У модели ракеты нос смотрит в -Z, поэтому +Z lookAt направляем назад.
+      missile.mesh.lookAt(
+        missile.mesh.position.x - missile.direction.x,
+        missile.mesh.position.y - missile.direction.y,
+        missile.mesh.position.z - missile.direction.z
+      );
+
+      const distance = targetPos ? missile.mesh.position.distanceTo(targetPos) : Infinity;
+
+      if (distance <= 2.4 || missile.life <= 0) {
+        if (missile.target?.userData?.damageable && targetHealth > 0) {
+          missile.target.userData.damageable.takeDamage(
+            9999,
+            missile.mesh.position.clone(),
+            missile.direction
+          );
+        }
+
+        this._spawnExplosionVisual(missile.mesh.position.clone());
+        this.audio.playExplosion();
+        this.scene.remove(missile.mesh);
+        this._disposeMissile(missile.mesh);
+        this.missiles.splice(i, 1);
+      }
+    }
+  }
+
+  _disposeMissile(mesh) {
+    mesh.traverse((child) => {
+      if (!child.isMesh) return;
+      child.geometry?.dispose?.();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) material?.dispose?.();
+    });
+  }
+
+  _clearMissiles() {
+    for (const missile of this.missiles) {
+      this.scene.remove(missile.mesh);
+      this._disposeMissile(missile.mesh);
+    }
+    this.missiles = [];
   }
 
   // -------------------------------------------------------------------------
@@ -708,6 +1206,13 @@ export class WeaponSystem {
   // -------------------------------------------------------------------------
 
   _updateHud() {
+    if (this.slot === 'pzrk') {
+      this.hud.setAmmo('∞', '∞');
+      this.hud.setWeapon('ПЗРК');
+      this.hud.setGrenades(this.grenades);
+      return;
+    }
+
     this.hud.setAmmo(this.magazine, this.reserve);
     this.hud.setGrenades(this.grenades);
     this.hud.setWeapon(this.slot === 'bolter' ? 'Болтер' : 'Цепной меч');
@@ -718,5 +1223,6 @@ export class WeaponSystem {
       this.scene.remove(projectile.mesh);
     }
     this.projectiles = [];
+    this._clearEffects();
   }
 }

@@ -15,6 +15,9 @@ export class HUD {
     this.grenadeValue = document.getElementById('grenade-value');
     this.damageFlash = document.getElementById('damage-flash');
     this.hitmarker = document.getElementById('hitmarker');
+    this.lockIndicator = document.getElementById('lock-indicator');
+    this.lockFrame = this.lockIndicator?.querySelector('.lock-frame') || null;
+    this.lockLabel = this.lockIndicator?.querySelector('.lock-label') || null;
     this.objective = document.getElementById('objective');
     this.toastEl = document.getElementById('toast');
     this.tutorial = document.getElementById('tutorial-active');
@@ -67,6 +70,31 @@ export class HUD {
     this._damageTimer = window.setTimeout(() => {
       this.damageFlash.classList.remove('is-active');
     }, 140);
+  }
+
+  // Индикатор захвата ПЗРК. progress 0..1 — наведение, locked — цель взята.
+  setLock(progress = 0, locked = false) {
+    if (!this.lockIndicator) return;
+
+    if (progress <= 0 && !locked) {
+      this.lockIndicator.classList.add('hidden');
+      this.lockIndicator.classList.remove('is-locked');
+      return;
+    }
+
+    this.lockIndicator.classList.remove('hidden');
+    this.lockIndicator.classList.toggle('is-locked', locked);
+
+    if (this.lockLabel) {
+      const percent = Math.round(Math.min(1, Math.max(0, progress)) * 100);
+      this.lockLabel.textContent = locked ? 'ЗАХВАТ' : `НАВЕДЕНИЕ ${percent}%`;
+    }
+
+    if (this.lockFrame) {
+      // Квадрат сужается по мере захвата.
+      const scale = locked ? 1 : 1.45 - Math.min(1, Math.max(0, progress)) * 0.45;
+      this.lockFrame.style.transform = `scale(${scale})`;
+    }
   }
 
   // Белый хитмаркер в центре.

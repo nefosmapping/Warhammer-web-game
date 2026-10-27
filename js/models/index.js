@@ -4,6 +4,7 @@ export * from './player.js';
 export * from './enemies.js';
 export * from './props.js';
 export * from './environment.js';
+export * from './valkyrie.js';
 
 export {
   describeModel,
@@ -14,8 +15,9 @@ export {
   beveledBox
 } from './utils.js';
 
-import { makeBolter, makeChainsword, makePlayerArms, makeGrenade } from './player.js';
+import { makeBolter, makeChainsword, makePlayerArms, makeGrenade, makeLauncher } from './player.js';
 import { makeOrkBoy, makeOrkShooter, makeOrkNob } from './enemies.js';
+import { makeValkyrie } from './valkyrie.js';
 import {
   makeTree,
   makeAmmoCrate,
@@ -39,10 +41,13 @@ export const MODEL_CATALOG = [
   { name: 'Цепной меч', category: 'Оружие игрока', create: makeChainsword, minTriangles: 4000 },
   { name: 'Руки игрока', category: 'Оружие игрока', create: makePlayerArms, minTriangles: 2000 },
   { name: 'Граната', category: 'Оружие игрока', create: makeGrenade, minTriangles: 0 },
+  { name: 'ПЗРК', category: 'Оружие игрока', create: makeLauncher, minTriangles: 0 },
 
   { name: 'Орк-бойз', category: 'Враги', create: makeOrkBoy, minTriangles: 8000 },
   { name: 'Орк-стрелок', category: 'Враги', create: makeOrkShooter, minTriangles: 8000 },
   { name: 'Орочий ноб', category: 'Враги', create: makeOrkNob, minTriangles: 30000 },
+
+  { name: '«Валькирия» (полная)', category: 'Техника', create: makeValkyrie, minTriangles: 20000 },
 
   { name: 'Дерево (вариация 1)', category: 'Пропсы', create: () => makeTree(0), minTriangles: 3000 },
   { name: 'Дерево (вариация 2)', category: 'Пропсы', create: () => makeTree(1), minTriangles: 3000 },

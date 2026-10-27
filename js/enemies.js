@@ -59,6 +59,14 @@ export class Enemy {
     this.burstTimer = 0;
     this.tracers = [];
 
+    // Таймер экшн-позы стрелка: взводится в момент выстрела, чтобы
+    // анимация «action» совпадала с трассером и вспышкой ствола.
+    this.actionTimer = 0;
+    this.running = false;
+    this.animState = 'idle';
+    this.muzzleGlowTimer = 0;
+    this._muzzleWorld = new THREE.Vector3();
+
     this.model.position.set(position.x, 0, position.z);
     this.scene.add(this.model);
 
@@ -71,8 +79,16 @@ export class Enemy {
       leftArmZ: rig.leftArm?.rotation.z ?? 0,
       rightArmZ: rig.rightArm?.rotation.z ?? 0,
       leftLegX: rig.leftLeg?.rotation.x ?? 0,
-      rightLegX: rig.rightLeg?.rotation.x ?? 0
+      rightLegX: rig.rightLeg?.rotation.x ?? 0,
+      leftCalfX: rig.calfL?.rotation.x ?? 0,
+      rightCalfX: rig.calfR?.rotation.x ?? 0,
+      leftForearmX: rig.forearmL?.rotation.x ?? 0,
+      rightForearmX: rig.forearmR?.rotation.x ?? 0,
+      chestX: rig.chest?.rotation.x ?? 0.25,
+      spineX: rig.spine?.rotation.x ?? 0.15,
+      neckX: rig.neck?.rotation.x ?? -0.4
     };
+    this.baseHipsY = rig.hips?.position.y ?? 1.2;
 
     // Сразу разворачиваем к игроку.
     this._facePlayer(1);
@@ -140,6 +156,7 @@ export class Enemy {
 
     this.attackCooldown = Math.max(0, this.attackCooldown - dt);
     this.hurtTimer = Math.max(0, this.hurtTimer - dt);
+    this.actionTimer = Math.max(0, this.actionTimer - dt);
 
     const dx = this.player.position.x - this.model.position.x;
     const dz = this.player.position.z - this.model.position.z;
@@ -259,11 +276,24 @@ export class Enemy {
   }
 
   _fireShooterShot() {
-    _start.copy(this.model.position);
-    _start.y += this.eyeHeight * 0.95;
+    // Источник трассера — реальный дульный маркер оружия, если он есть.
+    // Это связывает анимацию и визуальный выстрел в одну точку.
+    const muzzle = this.rig?.weapon?.getObjectByName('muzzle');
+    if (muzzle) {
+      this.model.updateMatrixWorld(true);
+      muzzle.getWorldPosition(this._muzzleWorld);
+      _start.copy(this._muzzleWorld);
+    } else {
+      _start.copy(this.model.position);
+      _start.y += this.eyeHeight * 0.95;
+    }
 
     _end.copy(this.player.position);
     _end.y = CONFIG.player.eyeHeight;
+
+    // Экшн-поза стрелка живёт ровно столько же, сколько вспышка/трассер.
+    this.actionTimer = 0.3;
+    this.animState = 'action';
 
     this._spawnTracer(_start, _end);
     this._flashMuzzle();
@@ -316,9 +346,37 @@ export class Enemy {
 
   _updateDeath(dt) {
     this.deathTimer += dt;
+    this.animState = 'death';
+
     const fall = clamp(this.deathTimer / 0.5, 0, 1);
     this.model.rotation.x = -fall * Math.PI * 0.48;
     this.model.position.y = -fall * 0.06;
+
+    // Заваливание конечностей и корпуса поверх общего падения модели.
+    const rig = this.rig;
+    if (rig) {
+      const k = 1 - Math.exp(-12 * dt);
+      const lerp = (current, target) => THREE.MathUtils.lerp(current, target, k);
+
+      if (rig.chest) rig.chest.rotation.x = lerp(rig.chest.rotation.x, 0.25 - fall * 0.5);
+      if (rig.spine) rig.spine.rotation.x = lerp(rig.spine.rotation.x, 0.15 - fall * 0.2);
+      if (rig.neck) rig.neck.rotation.x = lerp(rig.neck.rotation.x, -0.4 + fall * 0.25);
+
+      if (rig.leftArm) rig.leftArm.rotation.x = lerp(rig.leftArm.rotation.x, -fall * 2.0);
+      if (rig.rightArm) rig.rightArm.rotation.x = lerp(rig.rightArm.rotation.x, fall * 2.0);
+      if (rig.forearmL) rig.forearmL.rotation.x = lerp(rig.forearmL.rotation.x, -fall * 0.4);
+      if (rig.forearmR) rig.forearmR.rotation.x = lerp(rig.forearmR.rotation.x, fall * 0.4);
+
+      if (rig.leftLeg) rig.leftLeg.rotation.x = lerp(rig.leftLeg.rotation.x, -fall * 0.5);
+      if (rig.rightLeg) rig.rightLeg.rotation.x = lerp(rig.rightLeg.rotation.x, fall * 0.5);
+      if (rig.calfL) rig.calfL.rotation.x = lerp(rig.calfL.rotation.x, fall * 0.4);
+      if (rig.calfR) rig.calfR.rotation.x = lerp(rig.calfR.rotation.x, -fall * 0.4);
+
+      if (rig.hips) {
+        rig.hips.position.y = lerp(rig.hips.position.y, this.baseHipsY - fall * 0.35);
+        rig.hips.rotation.z = lerp(rig.hips.rotation.z, fall * 0.25);
+      }
+    }
 
     if (this.deathTimer >= 5) {
       this.dispose();
@@ -432,64 +490,141 @@ export class Enemy {
   // Анимация
   // -------------------------------------------------------------------------
 
+  // Анимация нового скелета: idle / walk / run / action / death.
+  // Экшн-поза стрелка взводится одновременно с выстрелом (actionTimer),
+  // а удар ближнего боя — с attackTimer, поэтому визуал совпадает с уроном.
   _animate(dt, moving, attacking = false) {
     const rig = this.rig;
     if (!rig) return;
 
-    const speedFactor = this.type === 'nob' ? 0.75 : 1;
-    this.walkPhase += dt * (moving ? 7.5 : 1.8) * speedFactor;
+    const isShooter = this.type === 'shooter';
+    const isNob = this.type === 'nob';
+    const speedFactor = isNob ? 0.75 : 1;
 
-    const stride = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
-    const idle = Math.sin(this.walkPhase) * 0.03;
+    this.running = moving && !isShooter;
+    this.walkPhase += dt * (moving ? (this.running ? 8 : 5) : 1.8) * speedFactor;
 
-    if (rig.leftLeg) rig.leftLeg.rotation.x = this.baseRotation.leftLegX + stride;
-    if (rig.rightLeg) rig.rightLeg.rotation.x = this.baseRotation.rightLegX - stride;
+    const actionActive = attacking || this.actionTimer > 0;
 
-    // Дыхание корпуса.
-    if (rig.body) {
-      const breath = Math.sin(this.walkPhase * 0.7) * 0.012;
-      rig.body.scale.set(1 + breath * 0.4, 1 + breath, 1 + breath * 0.4);
-      rig.body.position.y = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : idle * 0.3;
-    }
+    let tSpineX = this.baseRotation.spineX;
+    let tChestX = this.baseRotation.chestX;
+    let tNeckX = this.baseRotation.neckX;
+    let tArmLX = this.baseRotation.leftArmX;
+    let tArmRX = this.baseRotation.rightArmX;
+    let tForearmLX = this.baseRotation.leftForearmX;
+    let tForearmRX = this.baseRotation.rightForearmX;
+    let tLegLX = this.baseRotation.leftLegX;
+    let tLegRX = this.baseRotation.rightLegX;
+    let tCalfLX = this.baseRotation.leftCalfX;
+    let tCalfRX = this.baseRotation.rightCalfX;
+    let tHipsY = this.baseHipsY;
+    let tHipsRoll = 0;
 
-    // Руки.
-    if (rig.rightArm && this.type !== 'shooter') {
-      let angle = this.baseRotation.rightArmX + (moving ? -stride * 0.5 : idle);
-
-      if (attacking) {
-        const p = clamp(this.attackTimer / 0.6, 0, 1);
-        const windup = p < 0.4 ? -(p / 0.4) * 0.9 : -0.9 + ((p - 0.4) / 0.6) * 2.0;
-        angle = this.baseRotation.rightArmX + windup;
+    if (!actionActive) {
+      if (moving) {
+        // Бег/шаг: махи ногами, противоход рук, покачивание таза.
+        const run = this.running;
+        const swing = Math.sin(this.walkPhase) * (run ? 0.8 : 0.5);
+        tLegLX = this.baseRotation.leftLegX + swing;
+        tLegRX = this.baseRotation.rightLegX - swing;
+        tCalfLX = Math.max(0, -swing * (run ? 2 : 1.5));
+        tCalfRX = Math.max(0, swing * (run ? 2 : 1.5));
+        tArmLX += -swing * 0.5;
+        tArmRX += swing * 0.5;
+        tChestX = this.baseRotation.chestX + (run ? 0.22 : 0.08);
+        tHipsY = this.baseHipsY + Math.abs(Math.sin(this.walkPhase)) * (run ? 0.1 : 0.05);
+        tHipsRoll = Math.sin(this.walkPhase * 0.5) * 0.04;
+      } else {
+        // Простой: дыхание грудной клетки.
+        const breathe = Math.sin(this.walkPhase * 1.1) * 0.05;
+        tChestX = this.baseRotation.chestX + breathe;
+        tArmLX += breathe;
+        tArmRX -= breathe;
+        tNeckX = this.baseRotation.neckX + breathe * 0.5;
       }
-
-      rig.rightArm.rotation.x = angle;
-      rig.rightArm.rotation.z = this.baseRotation.rightArmZ;
+    } else if (isShooter) {
+      // Action стрелка: обе руки поднимают шутту, отдача совпадает с выстрелом.
+      const recoil = this.actionTimer > 0 ? Math.sin(this.actionTimer * 50) * 0.08 : 0;
+      tSpineX = 0.12;
+      tChestX = 0.1 + recoil * 0.5;
+      tArmRX = -1.6 + recoil;
+      tForearmRX = -0.2 + recoil;
+      tArmLX = -1.4 + recoil;
+      tForearmLX = -0.4 + recoil;
+    } else {
+      // Action ближнего боя: замах 0–0.24 с, удар к 0.34 с, возврат к 0.6 с.
+      const p = clamp(this.attackTimer / 0.6, 0, 1);
+      const swing = p < 0.4
+        ? -(p / 0.4) * 1.3
+        : -1.3 + ((p - 0.4) / 0.6) * 2.2;
+      tArmRX = swing;
+      tForearmRX = -0.4 + swing * 0.15;
+      tArmLX = 0.15;
+      tChestX = this.baseRotation.chestX - Math.max(0, swing) * 0.12;
+      tSpineX = this.baseRotation.spineX + Math.max(0, swing) * 0.05;
     }
+
+    const k = 1 - Math.exp(-15 * dt);
+    const lerp = (current, target) => THREE.MathUtils.lerp(current, target, k);
+
+    if (rig.spine) rig.spine.rotation.x = lerp(rig.spine.rotation.x, tSpineX);
+    if (rig.chest) rig.chest.rotation.x = lerp(rig.chest.rotation.x, tChestX);
+    if (rig.neck) rig.neck.rotation.x = lerp(rig.neck.rotation.x, tNeckX);
+    if (rig.head) rig.head.rotation.x = lerp(rig.head.rotation.x, 0);
 
     if (rig.leftArm) {
-      rig.leftArm.rotation.x = this.baseRotation.leftArmX + (moving ? stride * 0.35 : idle);
+      rig.leftArm.rotation.x = lerp(rig.leftArm.rotation.x, tArmLX);
+      rig.leftArm.rotation.z = this.baseRotation.leftArmZ;
+    }
+    if (rig.rightArm) {
+      rig.rightArm.rotation.x = lerp(rig.rightArm.rotation.x, tArmRX);
+      rig.rightArm.rotation.z = this.baseRotation.rightArmZ;
+    }
+    if (rig.forearmL) rig.forearmL.rotation.x = lerp(rig.forearmL.rotation.x, tForearmLX);
+    if (rig.forearmR) rig.forearmR.rotation.x = lerp(rig.forearmR.rotation.x, tForearmRX);
+
+    if (rig.leftLeg) rig.leftLeg.rotation.x = lerp(rig.leftLeg.rotation.x, tLegLX);
+    if (rig.rightLeg) rig.rightLeg.rotation.x = lerp(rig.rightLeg.rotation.x, tLegRX);
+    if (rig.calfL) rig.calfL.rotation.x = lerp(rig.calfL.rotation.x, tCalfLX);
+    if (rig.calfR) rig.calfR.rotation.x = lerp(rig.calfR.rotation.x, tCalfRX);
+
+    if (rig.hips) {
+      rig.hips.position.y = lerp(rig.hips.position.y, tHipsY);
+      rig.hips.rotation.z = lerp(rig.hips.rotation.z, tHipsRoll);
     }
 
-    // Светящийся ствол шутты гаснет.
-    if (this.type === 'shooter') this._updateMuzzleGlow(dt);
+    if (isShooter) this._updateMuzzleGlow(dt);
+
+    this.animState = actionActive ? 'action' : (moving ? (this.running ? 'run' : 'walk') : 'idle');
   }
 
   _flashMuzzle() {
-    this.muzzleGlowTimer = 0.07;
+    this.muzzleGlowTimer = 0.08;
     const weapon = this.rig?.weapon;
     const material = weapon?.userData?.glowMaterial;
     if (material) material.emissiveIntensity = 4.0;
+
+    // Вспышка и точечный свет дула из новой модели оружия.
+    const flash = weapon?.userData?.flash || weapon?.getObjectByName('muzzleFlash');
+    if (flash) flash.visible = true;
+    const light = weapon?.userData?.muzzleLight || weapon?.getObjectByName('muzzleLight');
+    if (light) light.intensity = 20;
   }
 
   _updateMuzzleGlow(dt) {
-    if (this.muzzleGlowTimer > 0) {
-      this.muzzleGlowTimer -= dt;
-      if (this.muzzleGlowTimer <= 0) {
-        const weapon = this.rig?.weapon;
-        const material = weapon?.userData?.glowMaterial;
-        if (material) material.emissiveIntensity = 0;
-      }
-    }
+    if (this.muzzleGlowTimer <= 0) return;
+
+    this.muzzleGlowTimer -= dt;
+    if (this.muzzleGlowTimer > 0) return;
+
+    const weapon = this.rig?.weapon;
+    const material = weapon?.userData?.glowMaterial;
+    if (material) material.emissiveIntensity = 0;
+
+    const flash = weapon?.userData?.flash || weapon?.getObjectByName('muzzleFlash');
+    if (flash) flash.visible = false;
+    const light = weapon?.userData?.muzzleLight || weapon?.getObjectByName('muzzleLight');
+    if (light) light.intensity = 0;
   }
 
   // -------------------------------------------------------------------------

@@ -3,105 +3,9 @@
 
 import * as THREE from 'three';
 import { makeTree } from '../models/props.js';
+import { makeValkyrie } from '../models/valkyrie.js';
 import { disposeObject3D } from '../cutscene.js';
 import { makeRng } from '../config.js';
-
-// ---------------------------------------------------------------------------
-// Процедурная «Валькирия» (упрощённый транспорт для облёта)
-// ---------------------------------------------------------------------------
-
-function buildValkyrie() {
-  const ship = new THREE.Group();
-  ship.name = 'valkyrie-flying';
-
-  const dark = new THREE.MeshStandardMaterial({ color: 0x3a3d38, roughness: 0.55, metalness: 0.7 });
-  const light = new THREE.MeshStandardMaterial({ color: 0x6b6b70, roughness: 0.4, metalness: 0.8 });
-  const rust = new THREE.MeshStandardMaterial({ color: 0x5a3a28, roughness: 0.8, metalness: 0.5 });
-  const glass = new THREE.MeshStandardMaterial({
-    color: 0x223344,
-    roughness: 0.15,
-    metalness: 0.4,
-    emissive: 0x0a1a22,
-    emissiveIntensity: 0.6
-  });
-  const glow = new THREE.MeshStandardMaterial({
-    color: 0xffd089,
-    emissive: 0xff8a2a,
-    emissiveIntensity: 3.0,
-    roughness: 0.4
-  });
-
-  // Фюзеляж вдоль оси Z, нос — вперёд (−Z).
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.15, 6.4, 20), dark);
-  body.rotation.x = Math.PI / 2;
-  body.position.set(0, 0, 0.2);
-  ship.add(body);
-
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.95, 1.9, 20), dark);
-  nose.rotation.x = -Math.PI / 2;
-  nose.position.set(0, 0, -3.9);
-  ship.add(nose);
-
-  const cockpit = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.85, 1.5), glass);
-  cockpit.position.set(0, 0.55, -2.9);
-  ship.add(cockpit);
-
-  // Крылья.
-  const wingLeft = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.16, 1.7), dark);
-  wingLeft.position.set(-2.4, 0.1, -0.6);
-  wingLeft.rotation.z = 0.08;
-  ship.add(wingLeft);
-
-  const wingRight = wingLeft.clone();
-  wingRight.position.x = 2.4;
-  wingRight.rotation.z = -0.08;
-  ship.add(wingRight);
-
-  // Двигатели с соплами.
-  for (const side of [-1, 1]) {
-    const nacelle = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 2.6, 16), light);
-    nacelle.rotation.x = Math.PI / 2;
-    nacelle.position.set(side * 2.7, 0.15, 0.4);
-    ship.add(nacelle);
-
-    const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 0.5, 14), glow);
-    exhaust.rotation.x = Math.PI / 2;
-    exhaust.position.set(side * 2.7, 0.15, 1.85);
-    ship.add(exhaust);
-
-    const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 1.1), rust);
-    pylon.position.set(side * 2.0, 0.1, -0.4);
-    pylon.rotation.y = side * 0.25;
-    ship.add(pylon);
-  }
-
-  // Хвостовое оперение.
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.6, 1.4), dark);
-  tail.position.set(0, 1.0, 2.4);
-  ship.add(tail);
-
-  const tailWing = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.14, 0.9), dark);
-  tailWing.position.set(0, 0.25, 2.6);
-  ship.add(tailWing);
-
-  // Аквила на борту (упрощённо: две перекладины + «голова»).
-  const aquilaMat = new THREE.MeshStandardMaterial({ color: 0x9a7a3a, roughness: 0.5, metalness: 0.8 });
-  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.06), aquilaMat);
-  bar.position.set(0, 0.9, -1.2);
-  ship.add(bar);
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.3, 8), aquilaMat);
-  head.position.set(0, 1.05, -1.2);
-  ship.add(head);
-
-  ship.traverse((child) => {
-    if (child.isMesh) {
-      child.castShadow = true;
-      child.receiveShadow = true;
-    }
-  });
-
-  return ship;
-}
 
 // ---------------------------------------------------------------------------
 // Сцена кат-сцены
@@ -158,9 +62,11 @@ export function createIntro({ scene }) {
     group.add(fire);
   }
 
-  // Корабль.
-  const ship = buildValkyrie();
-  ship.position.set(0, 3.2, 30);
+  // Корабль: детализированная процедурная «Валькирия» (винтокрылый транспорт).
+  // Масштаб подобран под кадры кат-сцены, а точка origin модели находится
+  // на уровне шасси, поэтому приподнимаем её над землёй.
+  const ship = makeValkyrie({ scale: 0.5 });
+  ship.position.set(0, 1.45, 30);
   group.add(ship);
 
   // Ракета.
@@ -219,12 +125,16 @@ export function createIntro({ scene }) {
       ship.visible = false;
     }
 
+    // Взрыв — в центре фюзеляжа (origin модели находится на уровне шасси).
+    const blastCenter = ship.position.clone();
+    blastCenter.y += 1.5;
+
     state.explosionTime = cutscene.time ?? 28;
     fireball.visible = true;
-    fireball.position.copy(ship.position);
+    fireball.position.copy(blastCenter);
     fireball.scale.setScalar(0.5);
     fireballMat.opacity = 1;
-    blastLight.position.copy(ship.position);
+    blastLight.position.copy(blastCenter);
     blastLight.intensity = 18;
   }
 
@@ -296,7 +206,7 @@ export function createIntro({ scene }) {
       if (state.shipVisible) {
         const flight = Math.min(time, 18) / 18;
         ship.position.z = 30 - flight * 26;
-        ship.position.y = 3.2 + Math.sin(time * 0.9) * 0.35;
+        ship.position.y = 1.45 + Math.sin(time * 0.9) * 0.35;
         ship.rotation.z = Math.sin(time * 0.7) * 0.06;
         ship.rotation.x = Math.sin(time * 0.55) * 0.03;
       }
@@ -305,6 +215,7 @@ export function createIntro({ scene }) {
       if (state.rocketFlying) {
         const from = new THREE.Vector3(16, 0.6, 18);
         const to = ship.position.clone();
+        to.y += 1.5;
         const travel = Math.min(1, (time - 26.4) / 1.7);
         rocket.position.lerpVectors(from, to, travel);
         rocket.lookAt(to);

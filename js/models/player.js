@@ -397,6 +397,102 @@ export function makePlayerArms() {
 }
 
 // ---------------------------------------------------------------------------
+// ПЗРК (переносной зенитный ракетный комплекс)
+// Труба направлена стволом в -Z, как и остальное оружие от первого лица.
+// ---------------------------------------------------------------------------
+
+export function makeLauncher() {
+  const group = new THREE.Group();
+  group.name = 'pzrk-launcher';
+
+  const body = new ModelBuilder('pzrk-body');
+
+  const dark = M.darkMetal();
+  const light = M.lightMetal();
+  const green = M.armyGreen();
+  const brass = M.brass();
+  const glow = M.glowRed();
+
+  // Основная труба.
+  body.add(cyl(0.115, 0.125, 1.45, 20, 3), green, {
+    position: [0, 0, -0.2],
+    rotation: [Math.PI / 2, 0, 0]
+  });
+
+  // Усилительные кольца.
+  for (const z of [-0.75, -0.3, 0.15, 0.48]) {
+    body.add(cyl(0.135, 0.135, 0.06, 20, 1), dark, {
+      position: [0, 0, z],
+      rotation: [Math.PI / 2, 0, 0]
+    });
+  }
+
+  // Задний раструб.
+  body.add(cyl(0.17, 0.13, 0.26, 20, 1, true), dark, {
+    position: [0, 0, 0.65],
+    rotation: [Math.PI / 2, 0, 0]
+  });
+
+  // Передняя крышка и ракета в трубе.
+  body.add(cyl(0.13, 0.13, 0.08, 20, 1), light, {
+    position: [0, 0, -0.95],
+    rotation: [Math.PI / 2, 0, 0]
+  });
+  body.add(cone(0.08, 0.28, 16), glow, {
+    position: [0, 0, -1.06],
+    rotation: [-Math.PI / 2, 0, 0]
+  });
+
+  // Прицел сверху.
+  body.add(beveledBox(0.09, 0.11, 0.3, 0.01), dark, { position: [0, 0.17, -0.25] });
+  body.add(beveledBox(0.06, 0.06, 0.05, 0.008), light, { position: [0, 0.2, -0.4] });
+  body.add(cyl(0.03, 0.03, 0.16, 12, 1), dark, {
+    position: [0, 0.18, 0.0],
+    rotation: [Math.PI / 2, 0, 0]
+  });
+
+  // Рукоять и спусковая скоба.
+  body.add(beveledBox(0.07, 0.2, 0.09, 0.012), dark, {
+    position: [0, -0.17, 0.02],
+    rotation: [0.18, 0, 0]
+  });
+  body.add(torus(0.06, 0.012, 8, 16, Math.PI), brass, {
+    position: [0, -0.1, 0.07],
+    rotation: [0, 0, Math.PI]
+  });
+
+  // Плечевой упор.
+  body.add(beveledBox(0.26, 0.16, 0.22, 0.02), dark, {
+    position: [0, -0.12, 0.48],
+    rotation: [-0.15, 0, 0]
+  });
+
+  // Ремень и крепления.
+  body.add(torus(0.16, 0.012, 6, 20, Math.PI), brass, {
+    position: [0.02, -0.06, 0.48],
+    rotation: [Math.PI / 2, 0, 0]
+  });
+  for (let i = 0; i < 4; i += 1) {
+    body.add(cyl(0.012, 0.012, 0.03, 8, 1), light, {
+      position: [0.12, 0.02, -0.6 + i * 0.34],
+      rotation: [0, 0, Math.PI / 2]
+    });
+  }
+
+  group.add(body.build());
+  addMarker(group, 'muzzle', [0, 0, -1.16]);
+
+  group.userData.weaponType = 'pzrk';
+  group.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = false;
+      child.receiveShadow = false;
+    }
+  });
+  return group;
+}
+
+// ---------------------------------------------------------------------------
 // Граната
 // ---------------------------------------------------------------------------
 

@@ -280,6 +280,44 @@ export class AudioSystem {
     this._tone({ type: 'square', freq: 1100, freqTo: 900, duration: 0.05, gain: 0.035, attack: 0.002 });
   }
 
+  // ПЗРК: короткий писк наведения.
+  playLockBeep() {
+    if (!this.ready) return;
+    this._tone({
+      type: 'square',
+      freq: 1250,
+      freqTo: 1350,
+      duration: 0.045,
+      gain: 0.035,
+      attack: 0.002
+    });
+  }
+
+  // ПЗРК: подтверждение захвата — двойной высокий сигнал.
+  playLockAcquired() {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    this._tone({ type: 'square', freq: 1450, duration: 0.08, gain: 0.05, when: t });
+    this._tone({ type: 'square', freq: 1900, duration: 0.12, gain: 0.05, when: t + 0.08 });
+  }
+
+  // ПЗРК: пуск ракеты — шипящий выхлоп и низкий толчок.
+  playRocketLaunch() {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    this._noise({
+      duration: 0.55,
+      filterType: 'bandpass',
+      frequency: 900,
+      sweepTo: 220,
+      q: 0.7,
+      gain: 0.42,
+      when: t
+    });
+    this._tone({ type: 'sawtooth', freq: 180, freqTo: 70, duration: 0.3, gain: 0.22, when: t });
+    this._tone({ type: 'sine', freq: 60, freqTo: 30, duration: 0.4, gain: 0.3, when: t });
+  }
+
   // Перезарядка: металлические щелчки (используется в Фазе 3).
   playReload() {
     if (!this.ready) return;

@@ -34,6 +34,12 @@
       </div>
       <div id="hitmarker" class="hitmarker" aria-hidden="true"></div>
 
+      <!-- Индикатор захвата цели ПЗРК -->
+      <div id="lock-indicator" class="lock-indicator hidden" aria-hidden="true">
+        <div class="lock-frame"></div>
+        <div class="lock-label">НАВЕДЕНИЕ</div>
+      </div>
+
       <div class="hud-corner hud-left">
         <div class="stat-row">
           <span class="stat-icon stat-hp">✚</span>
@@ -177,6 +183,29 @@
 
     <div id="fade-black" class="fade-black"></div>
     <div id="debug" class="debug hidden">FPS —</div>
+
+    <!-- ================= СКРЫТЫЙ ДЕБАГ-РЕЖИМ ================= -->
+    <div id="debug-panel" class="debug-panel hidden">
+      <div class="debug-panel-header">
+        <span class="debug-panel-title">DEBUG MODE</span>
+        <span class="debug-panel-badge">admin</span>
+      </div>
+      <div class="debug-panel-levels">
+        <button class="debug-level-btn" data-debug-level="level1">Уровень 1</button>
+        <button class="debug-level-btn" data-debug-level="level2">Уровень 2</button>
+        <button class="debug-level-btn" data-debug-level="level3">Уровень 3</button>
+        <button class="debug-level-btn debug-finale" data-debug-level="finale">Финал</button>
+        <button class="debug-level-btn debug-pzrk" data-debug-action="pzrk">Выдать ПЗРК</button>
+        <button class="debug-level-btn debug-spawn" data-debug-action="spawn-ork">+ Орк</button>
+        <button class="debug-level-btn debug-spawn" data-debug-action="spawn-guard">+ Гвардеец</button>
+      </div>
+      <div class="debug-panel-hint">
+        Y — свободный полёт · 4 — ПЗРК<br>
+        Колёсико мыши — приказ гвардейцам
+      </div>
+    </div>
+
+    <div id="debug-coords" class="debug-coords hidden">X 0.0 · Y 0.0 · Z 0.0</div>
   </div>
 
   <script type="module" src="js/main.js"></script>
